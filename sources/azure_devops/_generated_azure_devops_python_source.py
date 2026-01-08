@@ -8,6 +8,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Iterator
+import json
 
 from __future__ import annotations
 from pyspark.sql import Row
@@ -214,7 +215,7 @@ def register_lakeflow_source(spark):
 
             Expected options:
                 - organization: Azure DevOps organization name.
-                - project: Project name or ID.
+                - project: Project name or ID (optional for organization-level objects like users).
                 - personal_access_token: Personal access token (PAT) for authentication.
             """
             organization = options.get("organization")
@@ -225,16 +226,16 @@ def register_lakeflow_source(spark):
                 raise ValueError(
                     "Azure DevOps connector requires 'organization' in options"
                 )
-            if not project:
-                raise ValueError("Azure DevOps connector requires 'project' in options")
+            # Note: project is optional for organization-level objects (e.g., users)
             if not personal_access_token:
                 raise ValueError(
                     "Azure DevOps connector requires 'personal_access_token' in options"
                 )
 
             self.organization = organization
-            self.project = project
+            self.project = project  # May be None for organization-level objects
             self.base_url = f"https://dev.azure.com/{organization}"
+            self.vssps_base_url = f"https://vssps.dev.azure.com/{organization}"
 
             # Encode PAT as Base64 in the format :{pat}
             auth_string = f":{personal_access_token}"
@@ -260,8 +261,9 @@ def register_lakeflow_source(spark):
             - pullrequests: Pull requests across repositories
             - refs: Git references (branches and tags)
             - pushes: Git push events to repositories
+            - users: User identities and profiles in the organization
             """
-            return ["repositories", "commits", "pullrequests", "refs", "pushes"]
+            return ["repositories", "commits", "pullrequests", "refs", "pushes", "users"]
 
         def get_table_schema(
             self, table_name: str, table_options: dict[str, str]
@@ -463,6 +465,25 @@ def register_lakeflow_source(spark):
                 )
                 return pushes_schema
 
+            if table_name == "users":
+                users_schema = StructType(
+                    [
+                        StructField("descriptor", StringType(), False),
+                        StructField("displayName", StringType(), True),
+                        StructField("mailAddress", StringType(), True),
+                        StructField("principalName", StringType(), True),
+                        StructField("origin", StringType(), True),
+                        StructField("originId", StringType(), True),
+                        StructField("subjectKind", StringType(), True),
+                        StructField("domain", StringType(), True),
+                        StructField("directoryAlias", StringType(), True),
+                        StructField("url", StringType(), True),
+                        StructField("_links", links_struct, True),
+                        StructField("organization", StringType(), False),
+                    ]
+                )
+                return users_schema
+
             raise ValueError(f"Unsupported table: {table_name!r}")
 
         def read_table_metadata(
@@ -510,6 +531,12 @@ def register_lakeflow_source(spark):
                     "ingestion_type": "append",
                 }
 
+            if table_name == "users":
+                return {
+                    "primary_keys": ["descriptor"],
+                    "ingestion_type": "snapshot",
+                }
+
             raise ValueError(f"Unsupported table: {table_name!r}")
 
         def read_table(
@@ -543,6 +570,9 @@ def register_lakeflow_source(spark):
 
             if table_name == "pushes":
                 return self._read_pushes(start_offset, table_options)
+
+            if table_name == "users":
+                return self._read_users(start_offset, table_options)
 
             raise ValueError(f"Unsupported table: {table_name!r}")
 
@@ -1052,6 +1082,75 @@ def register_lakeflow_source(spark):
             # Return all pushes combined
             return iter(all_pushes), {}
 
+        def _read_users(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Read the `users` snapshot table.
+
+            This implementation lists all user identities in the Azure DevOps organization
+            using the Graph API:
+
+                GET https://vssps.dev.azure.com/{organization}/_apis/graph/users?api-version=7.1-preview.1
+
+            Note: This API uses a different base URL (vssps.dev.azure.com) and operates at
+            organization level (does not require project parameter).
+
+            The API uses continuation token-based pagination via response headers.
+
+            The returned JSON objects are enriched with connector-derived fields:
+                - organization: The organization name from connection config.
+            """
+            url = f"{self.vssps_base_url}/_apis/graph/users"
+            params = {
+                "api-version": "7.1-preview.1",
+            }
+
+            # Add continuation token from start_offset if present
+            continuation_token = start_offset.get("continuationToken")
+            if continuation_token:
+                params["continuationToken"] = continuation_token
+
+            response = self._session.get(url, params=params, timeout=30)
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Azure DevOps API error for users: {response.status_code} {response.text}"
+                )
+
+            response_json = response.json()
+            if not isinstance(response_json, dict):
+                raise ValueError(
+                    f"Unexpected response format for users: {type(response_json).__name__}"
+                )
+
+            users = response_json.get("value", [])
+            if not isinstance(users, list):
+                raise ValueError(
+                    f"Unexpected 'value' format in users response: {type(users).__name__}"
+                )
+
+            records: list[dict[str, Any]] = []
+            for user_obj in users:
+                # Shallow-copy the raw JSON and add connector-derived fields
+                record: dict[str, Any] = dict(user_obj)
+                record["organization"] = self.organization
+
+                # Ensure nested structs that are absent are represented as None, not {}
+                if "_links" not in record or record["_links"] == {}:
+                    record["_links"] = None
+
+                records.append(record)
+
+            # Check for continuation token in response headers
+            new_offset = {}
+            next_token = response.headers.get("X-MS-ContinuationToken")
+            if next_token:
+                # More data available, return continuation token
+                new_offset["continuationToken"] = next_token
+
+            # Snapshot ingestion: return empty offset when no more pages
+            return iter(records), new_offset
+
 
     ########################################################
     # pipeline/lakeflow_python_source.py
@@ -1060,6 +1159,8 @@ def register_lakeflow_source(spark):
     METADATA_TABLE = "_lakeflow_metadata"
     TABLE_NAME = "tableName"
     TABLE_NAME_LIST = "tableNameList"
+    TABLE_CONFIGS = "tableConfigs"
+    IS_DELETE_FLOW = "isDeleteFlow"
 
 
     class LakeflowStreamReader(SimpleDataSourceStreamReader):
@@ -1084,9 +1185,20 @@ def register_lakeflow_source(spark):
             return {}
 
         def read(self, start: dict) -> (Iterator[tuple], dict):
-            records, offset = self.lakeflow_connect.read_table(
-                self.options["tableName"], start, self.options
-            )
+            is_delete_flow = self.options.get(IS_DELETE_FLOW) == "true"
+            # Strip delete flow options before passing to connector
+            table_options = {
+                k: v for k, v in self.options.items() if k != IS_DELETE_FLOW
+            }
+
+            if is_delete_flow:
+                records, offset = self.lakeflow_connect.read_table_deletes(
+                    self.options[TABLE_NAME], start, table_options
+                )
+            else:
+                records, offset = self.lakeflow_connect.read_table(
+                    self.options[TABLE_NAME], start, table_options
+                )
             rows = map(lambda x: parse_value(x, self.schema), records)
             return rows, offset
 
@@ -1127,9 +1239,12 @@ def register_lakeflow_source(spark):
             table_name_list = self.options.get(TABLE_NAME_LIST, "")
             table_names = [o.strip() for o in table_name_list.split(",") if o.strip()]
             all_records = []
+            table_configs = json.loads(self.options.get(TABLE_CONFIGS, "{}"))
             for table in table_names:
-                metadata = self.lakeflow_connect.read_table_metadata(table, self.options)
-                all_records.append({"tableName": table, **metadata})
+                metadata = self.lakeflow_connect.read_table_metadata(
+                    table, table_configs.get(table, {})
+                )
+                all_records.append({TABLE_NAME: table, **metadata})
             return all_records
 
 
@@ -1143,11 +1258,11 @@ def register_lakeflow_source(spark):
             return "lakeflow_connect"
 
         def schema(self):
-            table = self.options["tableName"]
+            table = self.options[TABLE_NAME]
             if table == METADATA_TABLE:
                 return StructType(
                     [
-                        StructField("tableName", StringType(), False),
+                        StructField(TABLE_NAME, StringType(), False),
                         StructField("primary_keys", ArrayType(StringType()), True),
                         StructField("cursor_field", StringType(), True),
                         StructField("ingestion_type", StringType(), True),

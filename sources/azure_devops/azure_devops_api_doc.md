@@ -8,8 +8,9 @@
   - HTTP header: `Authorization: Basic <base64_encoded_pat>`
   - The PAT must be Base64-encoded in the format `:{pat}` (empty username, colon, then the PAT).
   - Alternatively, HTTP Basic authentication with empty username and PAT as password.
-- **Required scopes for read-only access to Git repositories**:
-  - `Code (read)` - Grants read access to source code, commits, and Git repositories.
+- **Required scopes for read-only access**:
+  - `Code (read)` - Grants read access to source code, commits, and Git repositories (for Git objects: repositories, commits, pullrequests, refs, pushes).
+  - `User Profile (read)` or `Member Entitlement Management (read)` - Grants read access to user identities and profiles (for users object).
 - **Other supported methods (not used by this connector)**:
   - OAuth 2.0 is also supported by Azure DevOps, but the connector will **not** perform interactive OAuth flows. Tokens must be provisioned out-of-band and stored in configuration.
 
@@ -50,11 +51,13 @@ The object list is **static** (defined by the connector), not discovered dynamic
 | `pullrequests` | Pull requests across repositories | `GET /{organization}/{project}/_apis/git/repositories/{repositoryId}/pullrequests` | `cdc` |
 | `refs` | Git references (branches and tags) | `GET /{organization}/{project}/_apis/git/repositories/{repositoryId}/refs` | `snapshot` |
 | `pushes` | Git push events to repositories | `GET /{organization}/{project}/_apis/git/repositories/{repositoryId}/pushes` | `append` |
+| `users` | User identities and profiles in the organization | `GET https://vssps.dev.azure.com/{organization}/_apis/graph/users` | `snapshot` |
 
 **Connector scope**:
-- Supports 5 Git objects from Azure DevOps REST API v7.1.
-- All objects require `organization` and `project` connection parameters.
-- Objects except `repositories` support `repository_id` as an **optional** table option:
+- Supports 6 objects from Azure DevOps REST API v7.1: 5 Git objects + 1 identity object.
+- Git objects require `organization` and `project` connection parameters.
+- The `users` object requires only `organization` connection parameter.
+- Git objects except `repositories` support `repository_id` as an **optional** table option:
   - **If provided**: Fetches data from specific repository only
   - **If omitted**: Auto-fetches data from ALL repositories in the project
 
@@ -64,6 +67,7 @@ High-level notes:
 - **Pull Requests**: Pull request metadata including source/target branches, status, reviewers, and completion details.
 - **Refs**: Git references (branches and tags) with names, commit IDs, and creators.
 - **Pushes**: Push events with pusher information, commit ranges, and ref updates.
+- **Users**: User identity information including display names, email addresses, account status, and profile details.
 
 
 ## **Object Schema**
@@ -453,6 +457,93 @@ curl -u :{PERSONAL_ACCESS_TOKEN} \
   - If omitted: Auto-fetches pushes from ALL repositories in the project.
 
 
+### `users` object
+
+**Source endpoint**:  
+`GET https://vssps.dev.azure.com/{organization}/_apis/graph/users?api-version=7.1-preview.1`
+
+**Important Notes**:
+- The Graph API uses a different base URL: `https://vssps.dev.azure.com` instead of `https://dev.azure.com`
+- This API is part of the Visual Studio Services Platform and handles user/identity management across Azure DevOps
+- While marked as "preview", this API is stable and widely used in production
+
+**Key behavior**:
+- Returns all user identities in the Azure DevOps organization.
+- Does NOT require a project parameter - operates at organization level.
+- Supports pagination using continuation tokens.
+- Snapshot ingestion - no incremental cursor available.
+- Includes both active and inactive users.
+
+**High-level schema (connector view)**:
+
+| Column Name | Type | Description |
+|------------|------|-------------|
+| `descriptor` | string | Unique immutable identifier for the user (base64-encoded). Primary key. |
+| `displayName` | string | User's display name. |
+| `mailAddress` | string or null | User's email address. |
+| `principalName` | string | User's principal name (typically email or UPN). |
+| `origin` | string | Origin of the user identity (e.g., `aad` for Azure Active Directory, `msa` for Microsoft Account). |
+| `originId` | string | Identifier in the origin system (e.g., Azure AD object ID). |
+| `subjectKind` | string | Type of subject, typically `user`. |
+| `domain` | string or null | Domain for the user account. |
+| `directoryAlias` | string or null | Directory alias for the user. |
+| `url` | string | API URL for this user resource. |
+| `_links` | struct | HAL-style hypermedia links to related resources. |
+| `organization` | string (connector-derived) | Organization name. |
+
+**Nested `_links` struct**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `self` | struct with href | Link to this user resource. |
+| `memberships` | struct with href | Link to user's group memberships. |
+| `membershipState` | struct with href | Link to membership state information. |
+| `storageKey` | struct with href | Link to storage key for the user. |
+| `avatar` | struct with href | Link to user's avatar image. |
+
+**Example request** (list all users):
+
+```bash
+curl -u :{PERSONAL_ACCESS_TOKEN} \
+  -H "Accept: application/json" \
+  "https://vssps.dev.azure.com/fabrikam/_apis/graph/users?api-version=7.1-preview.1"
+```
+
+**Example response** (single user):
+
+```json
+{
+  "subjectKind": "user",
+  "domain": "fabrikam.com",
+  "principalName": "john.doe@fabrikam.com",
+  "mailAddress": "john.doe@fabrikam.com",
+  "origin": "aad",
+  "originId": "a1b2c3d4-e5f6-7890-a1b2-c3d4e5f67890",
+  "displayName": "John Doe",
+  "url": "https://vssps.dev.azure.com/fabrikam/_apis/Graph/Users/aad.YTFiMmMzZDQtZTVmNi03ODkwLWExYjItYzNkNGU1ZjY3ODkw",
+  "descriptor": "aad.YTFiMmMzZDQtZTVmNi03ODkwLWExYjItYzNkNGU1ZjY3ODkw",
+  "_links": {
+    "self": {
+      "href": "https://vssps.dev.azure.com/fabrikam/_apis/Graph/Users/aad.YTFiMmMzZDQtZTVmNi03ODkwLWExYjItYzNkNGU1ZjY3ODkw"
+    },
+    "memberships": {
+      "href": "https://vssps.dev.azure.com/fabrikam/_apis/Graph/Memberships/aad.YTFiMmMzZDQtZTVmNi03ODkwLWExYjItYzNkNGU1ZjY3ODkw"
+    },
+    "avatar": {
+      "href": "https://dev.azure.com/fabrikam/_apis/GraphProfile/MemberAvatars/aad.YTFiMmMzZDQtZTVmNi03ODkwLWExYjItYzNkNGU1ZjY3ODkw"
+    }
+  }
+}
+```
+
+**Table options**:
+- None. The `users` object operates at organization level and does not require table-specific options.
+
+**Authentication requirements**:
+- Requires PAT with `User Profile (read)` or `Member Entitlement Management (read)` scope.
+- Broader than the `Code (read)` scope used for Git objects.
+
+
 ## **Get Object Primary Keys**
 
 There is no dedicated metadata endpoint to get primary keys for Azure DevOps Git objects.  
@@ -465,6 +556,7 @@ Instead, primary keys are defined **statically** based on resource schemas.
 | `pullrequests` | `pullRequestId`, `repository_id` | integer, string (UUID) | Composite key: pull request IDs are unique within a repository. |
 | `refs` | `name`, `repository_id` | string, string (UUID) | Composite key: ref names (e.g., `refs/heads/main`) are unique within a repository. |
 | `pushes` | `pushId`, `repository_id` | integer, string (UUID) | Composite key: push IDs are unique within a repository. |
+| `users` | `descriptor` | string (base64-encoded) | Unique immutable identifier for users across the organization. |
 
 **Implementation notes**:
 - For `repositories`: Use `id` field directly from the API response.
@@ -536,6 +628,7 @@ Planned ingestion type for Azure DevOps Git objects:
 | `pullrequests` | `cdc` | `closedDate` or `lastMergeCommit.commitId` | Pull requests can be updated (status changes, new reviews, completion). Track by closed date or merge commit for incremental updates. |
 | `refs` | `snapshot` | None | Refs (branches/tags) can be created, updated (point to different commits), or deleted. Snapshot approach captures all changes. |
 | `pushes` | `append` | `pushId` or `date` | Push events are immutable historical records. Use push ID or date for incremental reads. |
+| `users` | `snapshot` | None | User identities can be added or updated. No built-in incremental cursor. Full snapshot captures user additions, profile changes, and status updates. |
 
 **Detailed ingestion strategies**:
 
@@ -574,6 +667,14 @@ Planned ingestion type for Azure DevOps Git objects:
 - **Strategy**: Query pushes where `pushId` > last sync max pushId
 - **Query parameters**: `searchCriteria.fromDate`, `searchCriteria.toDate`
 - **Deletes**: Not applicable (pushes are immutable historical events)
+
+**For `users` (snapshot)**:
+- **Primary key**: `descriptor` (string, base64-encoded immutable identifier)
+- **Cursor field**: Not applicable
+- **Strategy**: Full snapshot on each sync; compare with previous to detect new users or profile changes
+- **Pagination**: Uses continuation tokens via `continuationToken` response header
+- **Updates**: Display name, email, and other profile fields can change
+- **Deletes**: Users can be removed from organization (detect by absence from snapshot)
 
 
 ## **Read API for Data Retrieval**
@@ -768,6 +869,55 @@ curl -u :{PERSONAL_ACCESS_TOKEN} \
 - Push IDs are auto-incrementing; can also use max pushId as cursor.
 
 
+### `users` read endpoint
+
+- **HTTP method**: `GET`
+- **Endpoint**: `https://vssps.dev.azure.com/{organization}/_apis/graph/users`
+- **Base URL**: Note the different base URL for Graph API (`vssps.dev.azure.com` instead of `dev.azure.com`)
+
+**Path parameters**:
+- `organization` (string, required): Organization name.
+
+**Query parameters**:
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `api-version` | string | yes | none | API version. Use `7.1-preview.1`. |
+| `continuationToken` | string | no | none | Token for paginated responses. Obtained from previous response. |
+
+**Response headers**:
+- `X-MS-ContinuationToken`: Continuation token for next page (if more results exist).
+
+**Pagination**: Uses continuation tokens. Check response header `X-MS-ContinuationToken` for next page token.
+
+**Example request** (list all users):
+
+```bash
+curl -u :{PERSONAL_ACCESS_TOKEN} \
+  -H "Accept: application/json" \
+  "https://vssps.dev.azure.com/fabrikam/_apis/graph/users?api-version=7.1-preview.1"
+```
+
+**Example request** (with continuation token):
+
+```bash
+curl -u :{PERSONAL_ACCESS_TOKEN} \
+  -H "Accept: application/json" \
+  "https://vssps.dev.azure.com/fabrikam/_apis/graph/users?api-version=7.1-preview.1&continuationToken=ABC123..."
+```
+
+**Snapshot strategy**:
+- First sync: Fetch all users following continuation tokens until exhausted.
+- Subsequent syncs: Full fetch again; compare descriptors to detect new/removed users.
+- No incremental cursor available - snapshot approach required.
+
+**Important notes**:
+- Does not require `project` parameter - operates at organization level.
+- Returns all users across the entire organization.
+- User `descriptor` is immutable and should be used as the primary key.
+- User profile fields (displayName, mailAddress) can change over time.
+
+
 ### General rate limiting considerations
 
 **Rate limits**:
@@ -862,6 +1012,7 @@ curl -u :{PERSONAL_ACCESS_TOKEN} \
   - Git Pull Requests API: https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-requests?view=azure-devops-rest-7.1
   - Git Refs API: https://learn.microsoft.com/en-us/rest/api/azure/devops/git/refs?view=azure-devops-rest-7.1
   - Git Pushes API: https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pushes?view=azure-devops-rest-7.1
+  - Graph Users API: https://learn.microsoft.com/en-us/rest/api/azure/devops/graph/users?view=azure-devops-rest-7.1
   - Authentication: https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/authentication-guidance
   - Rate Limits: https://learn.microsoft.com/en-us/azure/devops/integrate/concepts/rate-limits
   - API versioning: https://learn.microsoft.com/en-us/azure/devops/integrate/concepts/rest-api-versioning
@@ -879,7 +1030,8 @@ When conflicts arise, **official Azure DevOps documentation** is treated as the 
 | Official Docs | https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-requests?view=azure-devops-rest-7.1 | 2025-01-06 | High | Pull Requests API: Get Pull Requests endpoint, searchCriteria for status/creator/reviewer filtering, PR schema including reviewers/status/merge details. |
 | Official Docs | https://learn.microsoft.com/en-us/rest/api/azure/devops/git/refs?view=azure-devops-rest-7.1 | 2025-01-06 | High | Refs API: List endpoint, filter parameter for branches/tags, ref schema including name/objectId/creator. |
 | Official Docs | https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pushes?view=azure-devops-rest-7.1 | 2025-01-06 | High | Pushes API: Get Pushes endpoint, pagination, searchCriteria for date/pusher filtering, push schema including refUpdates and commits. |
-| Official Docs | https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/authentication-guidance | 2025-01-06 | High | Personal Access Token authentication, header format, Base64 encoding. Required scope: Code (read). |
+| Official Docs | https://learn.microsoft.com/en-us/rest/api/azure/devops/graph/users?view=azure-devops-rest-7.1 | 2025-01-08 | High | Graph Users API: List users endpoint, continuation token pagination, user schema including descriptor/displayName/mailAddress/principalName/origin. Uses different base URL (vssps.dev.azure.com). |
+| Official Docs | https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/authentication-guidance | 2025-01-06 | High | Personal Access Token authentication, header format, Base64 encoding. Required scopes: Code (read) for Git objects, User Profile (read) for users. |
 | Official Docs | https://learn.microsoft.com/en-us/azure/devops/integrate/concepts/rate-limits | 2025-01-06 | High | Rate limiting behavior, typical limits (~200 requests/user/minute), throttling strategy, Retry-After headers. |
 | Official Docs | https://learn.microsoft.com/en-us/azure/devops/integrate/concepts/rest-api-versioning | 2025-01-06 | High | API versioning scheme. Connector uses `api-version=7.1` (stable) to avoid preview version requirements. |
 

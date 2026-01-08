@@ -10,7 +10,8 @@ This documentation describes how to configure and use the **Azure DevOps** Lakef
   - Must be created in Azure DevOps and supplied to the connector as the `personal_access_token` option.
   - Minimum scopes:
     - `Code (read)` - Grants read access to source code, commits, and Git repositories.
-- **Network access**: The environment running the connector must be able to reach `https://dev.azure.com`.
+    - `User Profile (read)` or `Member Entitlement Management (read)` - Required if ingesting the `users` table.
+- **Network access**: The environment running the connector must be able to reach `https://dev.azure.com` and `https://vssps.dev.azure.com` (for the `users` table).
 - **Lakeflow / Databricks environment**: A workspace where you can register a Lakeflow community connector and run ingestion pipelines.
 
 ## Setup
@@ -43,7 +44,9 @@ Provide the following **connection-level** options when configuring the connecto
      - **Name**: Give it a descriptive name (e.g., "Lakeflow Connector").
      - **Organization**: Select the organization you want to access.
      - **Expiration**: Set an appropriate expiration date (or use a custom date).
-     - **Scopes**: Select **Custom defined** and check **Code (read)** under the Code section.
+     - **Scopes**: Select **Custom defined** and check:
+       - **Code (read)** under the Code section - Required for Git operations
+       - **User Profile (read)** under the User Profile section - Required if you plan to ingest the `users` table
   5. Click **Create** and copy the generated token immediately. Store it securely as you won't be able to see it again.
   6. Use this token as the `personal_access_token` connection option.
 
@@ -63,13 +66,17 @@ The connection can also be created using the standard Unity Catalog API.
 
 ## Supported Objects
 
-The Azure DevOps connector exposes a **static list** of 5 Git-related tables:
+The Azure DevOps connector exposes a **static list** of 6 tables:
 
+**Git-related tables:**
 - `repositories` - Git repository metadata
 - `commits` - Git commit history
 - `pullrequests` - Pull request data
 - `refs` - Git references (branches and tags)
 - `pushes` - Git push events
+
+**Identity tables:**
+- `users` - User profile and identity information from Azure DevOps
 
 ### Object summary, primary keys, and ingestion mode
 
@@ -82,6 +89,7 @@ The connector defines the ingestion mode and primary key for each table:
 | `pullrequests` | Pull requests with merge status and reviewers          | `cdc`          | `pullRequestId`, `repository_id`  | `closedDate`                |
 | `refs`         | Git references (branches and tags) per repository      | `snapshot`     | `name`, `repository_id`           | n/a                         |
 | `pushes`       | Git push events to repositories                        | `append`       | `pushId`, `repository_id`         | n/a                         |
+| `users`        | User profiles and identities in the organization       | `snapshot`     | `descriptor`                      | n/a                         |
 
 ### Required and optional table options
 
@@ -94,6 +102,7 @@ Each table has different configuration requirements:
 | `pullrequests` | None             | `repository_id`, `status_filter` | If `repository_id` omitted: auto-fetches from ALL repos; `status_filter`: `active`, `completed`, `abandoned`, or `all` (default: `all`) |
 | `refs`         | None             | `repository_id`, `filter` | If `repository_id` omitted: auto-fetches from ALL repos; `filter` for branches (`heads/`) or tags (`tags/`) |
 | `pushes`       | None             | `repository_id`  | If `repository_id` omitted: auto-fetches from ALL repos; if provided: fetches from specific repo only |
+| `users`        | None             | None             | Uses connection-level `organization`; fetches all users in the organization |
 
 **Important Notes**:
 - **Auto-fetch mode** (repository_id omitted): Connector automatically fetches data from ALL repositories in the project. The `repository_id` field is populated as a foreign key for each record.
@@ -144,6 +153,15 @@ All table schemas preserve the nested JSON structure from the Azure DevOps API r
 - **Changes**: `refUpdates` (array of structs with name, oldObjectId, newObjectId)
 - **URLs**: `url`
 - **Connector-derived**: `organization`, `project_name`, `repository_id`
+
+#### `users` table (12 fields)
+- **Identity**: `descriptor` (unique string identifier), `principalName` (email or UPN)
+- **Display info**: `displayName`, `mailAddress`
+- **Origin**: `origin` (source of identity: aad, vsts, etc.), `originId` (external ID)
+- **Type**: `subjectKind` (user, group, etc.), `domain`
+- **Metadata**: `directoryAlias`, `url`
+- **Links**: `_links` (struct with avatar and other profile links)
+- **Connector-derived**: `organization`
 
 **Common patterns across all tables**:
 - All connector-derived fields (`organization`, `project_name`, and `repository_id` where applicable) are non-nullable strings.
@@ -287,7 +305,26 @@ In your pipeline code (e.g., `ingestion_pipeline.py` or a similar entrypoint), c
 }
 ```
 
-#### Example 5: Ingest multiple objects from the same repository
+#### Example 5: Ingest users table
+
+```json
+{
+  "pipeline_spec": {
+    "connection_name": "azure_devops_connection",
+    "object": [
+      {
+        "table": {
+          "source_table": "users"
+        }
+      }
+    ]
+  }
+}
+```
+
+**What happens**: The connector fetches all users in the organization. Note that this requires the `User Profile (read)` scope in your PAT.
+
+#### Example 6: Ingest multiple objects from the same repository
 
 ```json
 {
@@ -323,6 +360,11 @@ In your pipeline code (e.g., `ingestion_pipeline.py` or a similar entrypoint), c
           "source_table": "pushes",
           "repository_id": "e39fba9d-6cf8-4cfb-a4b9-1714d52d160b"
         }
+      },
+      {
+        "table": {
+          "source_table": "users"
+        }
       }
     ]
   }
@@ -337,13 +379,14 @@ In your pipeline code (e.g., `ingestion_pipeline.py` or a similar entrypoint), c
   - Obtain `repository_id` UUID from the `repositories` table's `id` field
 - The `status_filter` option for `pullrequests` accepts: `active`, `completed`, `abandoned`, or `all` (default).
 - The `filter` option for `refs` can be `heads/` (branches only), `tags/` (tags only), or omitted (all refs).
+- The `users` table requires no table-specific options and fetches all users in the organization. Ensure your PAT has `User Profile (read)` scope.
 
 ### Step 3: Run and Schedule the Pipeline
 
 Run the pipeline using your standard Lakeflow / Databricks orchestration (e.g., a scheduled job or workflow).
 
 **Understanding ingestion types**:
-- **Snapshot** (`repositories`, `refs`): Full refresh on each sync. All records are fetched and replaced.
+- **Snapshot** (`repositories`, `refs`, `users`): Full refresh on each sync. All records are fetched and replaced.
 - **Append** (`commits`, `pushes`): New records are added incrementally. Historical data is never modified or deleted.
 - **CDC** (`pullrequests`): Change Data Capture using the `closedDate` cursor field. Captures new and updated pull requests efficiently.
 
@@ -351,6 +394,7 @@ Run the pipeline using your standard Lakeflow / Databricks orchestration (e.g., 
 - `repositories`: Single API call retrieves all repositories in the project
 - `commits`, `pushes`: Paginated APIs with 1,000 records per page
 - `pullrequests`, `refs`: Single API call per repository (typically small result sets)
+- `users`: Paginated API (Graph API) that retrieves all users in the organization
 
 #### Best Practices
 
@@ -393,8 +437,11 @@ Common issues and how to address them:
 
 - **Authentication failures (`401 Unauthorized`)**:
   - Verify that the `personal_access_token` is correct and not expired or revoked.
-  - Check that the token has the `Code (read)` scope enabled.
+  - Check that the token has the required scopes:
+    - `Code (read)` for Git tables (`repositories`, `commits`, `pullrequests`, `refs`, `pushes`)
+    - `User Profile (read)` or `Member Entitlement Management (read)` for the `users` table
   - Ensure the account associated with the PAT has access to the specified organization and project.
+  - If only the `users` table fails with 401 while Git tables succeed, the PAT is missing the User Profile scope.
 
 - **`404 Not Found` errors**:
   - **For connection-level errors**: Verify that the `organization` and `project` names are spelled correctly. Check that they exist and are accessible.
@@ -454,6 +501,7 @@ Common issues and how to address them:
 - [Git Pull Requests API](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-requests?view=azure-devops-rest-7.1)
 - [Git Refs API](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/refs?view=azure-devops-rest-7.1)
 - [Git Pushes API](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pushes?view=azure-devops-rest-7.1)
+- [Graph Users API](https://learn.microsoft.com/en-us/rest/api/azure/devops/graph/users?view=azure-devops-rest-7.1)
 
 ### Azure DevOps Guides
 - [Authentication with Personal Access Tokens](https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate)

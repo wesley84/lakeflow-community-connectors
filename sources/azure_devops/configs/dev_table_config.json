@@ -1,8 +1,11 @@
 {
   "repositories": {},
   "commits": {},
-  "pullrequests": {},
+  "pullrequests": {
+    "repository_id": "e39fba9d-6cf8-4cfb-a4b9-1714d52d160b",
+    "status_filter": "all"
+  },
   "refs": {},
-  "pushes": {}
+  "pushes": {},
+  "users": {}
 }
-
