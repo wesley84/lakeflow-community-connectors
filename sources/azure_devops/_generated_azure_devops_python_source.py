@@ -260,11 +260,33 @@ def register_lakeflow_source(spark):
             - repositories: Git repositories within a project
             - commits: Git commits across repositories
             - pullrequests: Pull requests across repositories
+            - pullrequest_threads: Comments and discussions on pull requests
+            - pullrequest_workitems: Work items linked to pull requests
+            - pullrequest_commits: Commits included in pull requests
+            - pullrequest_reviewers: Detailed reviewer information for pull requests
             - refs: Git references (branches and tags)
             - pushes: Git push events to repositories
             - users: User identities and profiles in the organization
+            - workitems: Work items (tasks, bugs, user stories, etc.)
+            - workitem_revisions: Historical changes to work items
+            - workitem_types: Work item type definitions and fields
             """
-            return ["projects", "repositories", "commits", "pullrequests", "refs", "pushes", "users"]
+            return [
+                "projects",
+                "repositories",
+                "commits",
+                "pullrequests",
+                "pullrequest_threads",
+                "pullrequest_workitems",
+                "pullrequest_commits",
+                "pullrequest_reviewers",
+                "refs",
+                "pushes",
+                "users",
+                "workitems",
+                "workitem_revisions",
+                "workitem_types",
+            ]
 
         def get_table_schema(
             self, table_name: str, table_options: dict[str, str]
@@ -501,6 +523,192 @@ def register_lakeflow_source(spark):
                 )
                 return users_schema
 
+            if table_name == "pullrequest_threads":
+                # Nested comment struct
+                comment_struct = StructType(
+                    [
+                        StructField("id", LongType(), True),
+                        StructField("parentCommentId", LongType(), True),
+                        StructField("author", identity_struct, True),
+                        StructField("content", StringType(), True),
+                        StructField("publishedDate", StringType(), True),
+                        StructField("lastUpdatedDate", StringType(), True),
+                        StructField("lastContentUpdatedDate", StringType(), True),
+                        StructField("commentType", StringType(), True),
+                    ]
+                )
+
+                # Nested threadContext struct
+                position_struct = StructType(
+                    [
+                        StructField("line", LongType(), True),
+                        StructField("offset", LongType(), True),
+                    ]
+                )
+
+                thread_context_struct = StructType(
+                    [
+                        StructField("filePath", StringType(), True),
+                        StructField("rightFileStart", position_struct, True),
+                        StructField("rightFileEnd", position_struct, True),
+                        StructField("leftFileStart", position_struct, True),
+                        StructField("leftFileEnd", position_struct, True),
+                    ]
+                )
+
+                pullrequest_threads_schema = StructType(
+                    [
+                        StructField("id", LongType(), False),
+                        StructField("publishedDate", StringType(), True),
+                        StructField("lastUpdatedDate", StringType(), True),
+                        StructField("comments", ArrayType(comment_struct), True),
+                        StructField("status", StringType(), True),
+                        StructField("threadContext", thread_context_struct, True),
+                        StructField("isDeleted", BooleanType(), True),
+                        StructField("organization", StringType(), False),
+                        StructField("project_name", StringType(), False),
+                        StructField("repository_id", StringType(), False),
+                        StructField("pullrequest_id", LongType(), False),
+                    ]
+                )
+                return pullrequest_threads_schema
+
+            if table_name == "pullrequest_workitems":
+                pullrequest_workitems_schema = StructType(
+                    [
+                        StructField("id", StringType(), False),
+                        StructField("url", StringType(), True),
+                        StructField("organization", StringType(), False),
+                        StructField("project_name", StringType(), False),
+                        StructField("repository_id", StringType(), False),
+                        StructField("pullrequest_id", LongType(), False),
+                    ]
+                )
+                return pullrequest_workitems_schema
+
+            if table_name == "pullrequest_commits":
+                pullrequest_commits_schema = StructType(
+                    [
+                        StructField("commitId", StringType(), False),
+                        StructField("author", git_user_struct, True),
+                        StructField("committer", git_user_struct, True),
+                        StructField("comment", StringType(), True),
+                        StructField("commentTruncated", BooleanType(), True),
+                        StructField("url", StringType(), True),
+                        StructField("organization", StringType(), False),
+                        StructField("project_name", StringType(), False),
+                        StructField("repository_id", StringType(), False),
+                        StructField("pullrequest_id", LongType(), False),
+                    ]
+                )
+                return pullrequest_commits_schema
+
+            if table_name == "pullrequest_reviewers":
+                pullrequest_reviewers_schema = StructType(
+                    [
+                        StructField("reviewerUrl", StringType(), True),
+                        StructField("vote", LongType(), True),
+                        StructField("hasDeclined", BooleanType(), True),
+                        StructField("isFlagged", BooleanType(), True),
+                        StructField("displayName", StringType(), True),
+                        StructField("id", StringType(), False),
+                        StructField("uniqueName", StringType(), True),
+                        StructField("url", StringType(), True),
+                        StructField("imageUrl", StringType(), True),
+                        StructField("isRequired", BooleanType(), True),
+                        StructField("organization", StringType(), False),
+                        StructField("project_name", StringType(), False),
+                        StructField("repository_id", StringType(), False),
+                        StructField("pullrequest_id", LongType(), False),
+                    ]
+                )
+                return pullrequest_reviewers_schema
+
+            if table_name == "workitems":
+                # Nested relation struct
+                relation_struct = StructType(
+                    [
+                        StructField("rel", StringType(), True),
+                        StructField("url", StringType(), True),
+                    ]
+                )
+
+                workitems_schema = StructType(
+                    [
+                        StructField("id", LongType(), False),
+                        StructField("rev", LongType(), True),
+                        StructField("fields", StringType(), True),  # JSON string for dynamic fields
+                        StructField("relations", ArrayType(relation_struct), True),
+                        StructField("url", StringType(), True),
+                        StructField("organization", StringType(), False),
+                        StructField("project_name", StringType(), False),
+                    ]
+                )
+                return workitems_schema
+
+            if table_name == "workitem_revisions":
+                workitem_revisions_schema = StructType(
+                    [
+                        StructField("id", LongType(), False),
+                        StructField("rev", LongType(), False),
+                        StructField("workItemId", LongType(), True),
+                        StructField("revisedDate", StringType(), True),
+                        StructField("fields", StringType(), True),  # JSON string for dynamic fields
+                        StructField("url", StringType(), True),
+                        StructField("organization", StringType(), False),
+                        StructField("project_name", StringType(), False),
+                    ]
+                )
+                return workitem_revisions_schema
+
+            if table_name == "workitem_types":
+                # Nested field definition struct
+                field_def_struct = StructType(
+                    [
+                        StructField("referenceName", StringType(), True),
+                        StructField("name", StringType(), True),
+                        StructField("type", StringType(), True),
+                        StructField("readOnly", BooleanType(), True),
+                        StructField("required", BooleanType(), True),
+                        StructField("defaultValue", StringType(), True),
+                        StructField("helpText", StringType(), True),
+                    ]
+                )
+
+                # Nested state struct
+                state_struct = StructType(
+                    [
+                        StructField("name", StringType(), True),
+                        StructField("color", StringType(), True),
+                        StructField("category", StringType(), True),
+                    ]
+                )
+
+                # Icon struct
+                icon_struct = StructType(
+                    [
+                        StructField("id", StringType(), True),
+                        StructField("url", StringType(), True),
+                    ]
+                )
+
+                workitem_types_schema = StructType(
+                    [
+                        StructField("name", StringType(), True),
+                        StructField("referenceName", StringType(), False),
+                        StructField("description", StringType(), True),
+                        StructField("color", StringType(), True),
+                        StructField("icon", icon_struct, True),
+                        StructField("isDisabled", BooleanType(), True),
+                        StructField("fields", ArrayType(field_def_struct), True),
+                        StructField("states", ArrayType(state_struct), True),
+                        StructField("url", StringType(), True),
+                        StructField("organization", StringType(), False),
+                        StructField("project_name", StringType(), False),
+                    ]
+                )
+                return workitem_types_schema
+
             raise ValueError(f"Unsupported table: {table_name!r}")
 
         def read_table_metadata(
@@ -560,6 +768,50 @@ def register_lakeflow_source(spark):
                     "ingestion_type": "snapshot",
                 }
 
+            if table_name == "pullrequest_threads":
+                return {
+                    "primary_keys": ["id", "pullrequest_id", "repository_id"],
+                    "ingestion_type": "append",
+                    "cursor_field": "publishedDate",
+                }
+
+            if table_name == "pullrequest_workitems":
+                return {
+                    "primary_keys": ["id", "pullrequest_id", "repository_id"],
+                    "ingestion_type": "snapshot",
+                }
+
+            if table_name == "pullrequest_commits":
+                return {
+                    "primary_keys": ["commitId", "pullrequest_id", "repository_id"],
+                    "ingestion_type": "snapshot",
+                }
+
+            if table_name == "pullrequest_reviewers":
+                return {
+                    "primary_keys": ["id", "pullrequest_id", "repository_id"],
+                    "ingestion_type": "snapshot",
+                }
+
+            if table_name == "workitems":
+                return {
+                    "primary_keys": ["id"],
+                    "ingestion_type": "cdc",
+                    "cursor_field": "rev",
+                }
+
+            if table_name == "workitem_revisions":
+                return {
+                    "primary_keys": ["id", "rev"],
+                    "ingestion_type": "append",
+                }
+
+            if table_name == "workitem_types":
+                return {
+                    "primary_keys": ["referenceName", "project_name"],
+                    "ingestion_type": "snapshot",
+                }
+
             raise ValueError(f"Unsupported table: {table_name!r}")
 
         def read_table(
@@ -599,6 +851,27 @@ def register_lakeflow_source(spark):
 
             if table_name == "users":
                 return self._read_users(start_offset, table_options)
+
+            if table_name == "pullrequest_threads":
+                return self._read_pullrequest_threads(start_offset, table_options)
+
+            if table_name == "pullrequest_workitems":
+                return self._read_pullrequest_workitems(start_offset, table_options)
+
+            if table_name == "pullrequest_commits":
+                return self._read_pullrequest_commits(start_offset, table_options)
+
+            if table_name == "pullrequest_reviewers":
+                return self._read_pullrequest_reviewers(start_offset, table_options)
+
+            if table_name == "workitems":
+                return self._read_workitems(start_offset, table_options)
+
+            if table_name == "workitem_revisions":
+                return self._read_workitem_revisions(start_offset, table_options)
+
+            if table_name == "workitem_types":
+                return self._read_workitem_types(start_offset, table_options)
 
             raise ValueError(f"Unsupported table: {table_name!r}")
 
@@ -1297,6 +1570,699 @@ def register_lakeflow_source(spark):
 
             # Snapshot ingestion: return empty offset when no more pages
             return iter(records), new_offset
+
+        def _read_pullrequest_threads(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Read the `pullrequest_threads` append table.
+
+            This implementation fetches comment threads for pull requests. Supports auto-discovery:
+            - If repository_id and pullrequest_id provided: fetch threads for specific PR
+            - If only repository_id provided: fetch threads for all PRs in that repository
+            - If neither provided: fetch threads for all PRs across all repositories
+
+            GET /{organization}/{project}/_apis/git/repositories/{repositoryId}/pullRequests/{pullRequestId}/threads?api-version=7.1
+            """
+            repository_id = table_options.get("repository_id")
+            pullrequest_id = table_options.get("pullrequest_id")
+
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+
+            # If no project specified, fetch from all projects
+            if not project:
+                projects_iterator, _ = self._read_projects({}, {})
+                projects = [p.get("name") for p in projects_iterator if p.get("name")]
+            else:
+                projects = [project]
+
+            all_records = []
+
+            for project in projects:
+                if repository_id and pullrequest_id:
+                    # Targeted query: specific PR
+                    url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullRequests/{pullrequest_id}/threads"
+                    params = {"api-version": "7.1"}
+
+                    response = self._session.get(url, params=params, timeout=30)
+                    if response.status_code != 200:
+                        raise RuntimeError(
+                            f"Azure DevOps API error for pullrequest_threads: {response.status_code} {response.text}"
+                        )
+
+                    threads_data = response.json()
+                    threads = threads_data.get("value", [])
+
+                    for thread in threads:
+                        record = dict(thread)
+                        record["organization"] = self.organization
+                        record["project_name"] = project
+                        record["repository_id"] = repository_id
+                        record["pullrequest_id"] = int(pullrequest_id)
+                        all_records.append(record)
+
+                elif repository_id:
+                    # Auto-fetch: all PRs in this repository
+                    prs_url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullrequests"
+                    prs_response = self._session.get(
+                        prs_url, params={"api-version": "7.1", "searchCriteria.status": "all"}, timeout=30
+                    )
+                    if prs_response.status_code != 200:
+                        continue
+
+                    prs_data = prs_response.json()
+                    prs = prs_data.get("value", [])
+
+                    for pr in prs:
+                        pr_id = pr.get("pullRequestId")
+                        if not pr_id:
+                            continue
+
+                        threads_url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullRequests/{pr_id}/threads"
+                        threads_response = self._session.get(threads_url, params={"api-version": "7.1"}, timeout=30)
+                        if threads_response.status_code != 200:
+                            continue
+
+                        threads_data = threads_response.json()
+                        threads = threads_data.get("value", [])
+
+                        for thread in threads:
+                            record = dict(thread)
+                            record["organization"] = self.organization
+                            record["project_name"] = project
+                            record["repository_id"] = repository_id
+                            record["pullrequest_id"] = pr_id
+                            all_records.append(record)
+
+                else:
+                    # Auto-fetch: all PRs across all repositories
+                    repos_url = f"{self.base_url}/{project}/_apis/git/repositories"
+                    repos_response = self._session.get(repos_url, params={"api-version": "7.1"}, timeout=30)
+                    if repos_response.status_code != 200:
+                        continue
+
+                    repos_data = repos_response.json()
+                    repos = repos_data.get("value", [])
+
+                    for repo in repos:
+                        repo_id = repo.get("id")
+                        if not repo_id:
+                            continue
+
+                        prs_url = f"{self.base_url}/{project}/_apis/git/repositories/{repo_id}/pullrequests"
+                        prs_response = self._session.get(
+                            prs_url, params={"api-version": "7.1", "searchCriteria.status": "all"}, timeout=30
+                        )
+                        if prs_response.status_code != 200:
+                            continue
+
+                        prs_data = prs_response.json()
+                        prs = prs_data.get("value", [])
+
+                        for pr in prs:
+                            pr_id = pr.get("pullRequestId")
+                            if not pr_id:
+                                continue
+
+                            threads_url = f"{self.base_url}/{project}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/threads"
+                            threads_response = self._session.get(threads_url, params={"api-version": "7.1"}, timeout=30)
+                            if threads_response.status_code != 200:
+                                continue
+
+                            threads_data = threads_response.json()
+                            threads = threads_data.get("value", [])
+
+                            for thread in threads:
+                                record = dict(thread)
+                                record["organization"] = self.organization
+                                record["project_name"] = project
+                                record["repository_id"] = repo_id
+                                record["pullrequest_id"] = pr_id
+                                all_records.append(record)
+
+            return iter(all_records), {}
+
+        def _read_pullrequest_workitems(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Read the `pullrequest_workitems` snapshot table.
+
+            This implementation fetches work items linked to pull requests.
+
+            GET /{organization}/{project}/_apis/git/repositories/{repositoryId}/pullRequests/{pullRequestId}/workitems?api-version=7.1
+            """
+            repository_id = table_options.get("repository_id")
+            pullrequest_id = table_options.get("pullrequest_id")
+
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+
+            # If no project specified, fetch from all projects
+            if not project:
+                projects_iterator, _ = self._read_projects({}, {})
+                projects = [p.get("name") for p in projects_iterator if p.get("name")]
+            else:
+                projects = [project]
+
+            all_records = []
+
+            for project in projects:
+                if repository_id and pullrequest_id:
+                    # Targeted query: specific PR
+                    url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullRequests/{pullrequest_id}/workitems"
+                    params = {"api-version": "7.1"}
+
+                    response = self._session.get(url, params=params, timeout=30)
+                    if response.status_code != 200:
+                        raise RuntimeError(
+                            f"Azure DevOps API error for pullrequest_workitems: {response.status_code} {response.text}"
+                        )
+
+                    # Response is a flat array, not wrapped in {value: [...]}
+                    workitems = response.json()
+                    if not isinstance(workitems, list):
+                        workitems = []
+
+                    for workitem in workitems:
+                        record = dict(workitem)
+                        record["organization"] = self.organization
+                        record["project_name"] = project
+                        record["repository_id"] = repository_id
+                        record["pullrequest_id"] = int(pullrequest_id)
+                        all_records.append(record)
+
+                elif repository_id:
+                    # Auto-fetch: all PRs in this repository
+                    prs_url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullrequests"
+                    prs_response = self._session.get(
+                        prs_url, params={"api-version": "7.1", "searchCriteria.status": "all"}, timeout=30
+                    )
+                    if prs_response.status_code != 200:
+                        continue
+
+                    prs_data = prs_response.json()
+                    prs = prs_data.get("value", [])
+
+                    for pr in prs:
+                        pr_id = pr.get("pullRequestId")
+                        if not pr_id:
+                            continue
+
+                        workitems_url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullRequests/{pr_id}/workitems"
+                        workitems_response = self._session.get(workitems_url, params={"api-version": "7.1"}, timeout=30)
+                        if workitems_response.status_code != 200:
+                            continue
+
+                        workitems = workitems_response.json()
+                        if not isinstance(workitems, list):
+                            continue
+
+                        for workitem in workitems:
+                            record = dict(workitem)
+                            record["organization"] = self.organization
+                            record["project_name"] = project
+                            record["repository_id"] = repository_id
+                            record["pullrequest_id"] = pr_id
+                            all_records.append(record)
+
+                else:
+                    # Auto-fetch: all PRs across all repositories
+                    repos_url = f"{self.base_url}/{project}/_apis/git/repositories"
+                    repos_response = self._session.get(repos_url, params={"api-version": "7.1"}, timeout=30)
+                    if repos_response.status_code != 200:
+                        continue
+
+                    repos_data = repos_response.json()
+                    repos = repos_data.get("value", [])
+
+                    for repo in repos:
+                        repo_id = repo.get("id")
+                        if not repo_id:
+                            continue
+
+                        prs_url = f"{self.base_url}/{project}/_apis/git/repositories/{repo_id}/pullrequests"
+                        prs_response = self._session.get(
+                            prs_url, params={"api-version": "7.1", "searchCriteria.status": "all"}, timeout=30
+                        )
+                        if prs_response.status_code != 200:
+                            continue
+
+                        prs_data = prs_response.json()
+                        prs = prs_data.get("value", [])
+
+                        for pr in prs:
+                            pr_id = pr.get("pullRequestId")
+                            if not pr_id:
+                                continue
+
+                            workitems_url = f"{self.base_url}/{project}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/workitems"
+                            workitems_response = self._session.get(workitems_url, params={"api-version": "7.1"}, timeout=30)
+                            if workitems_response.status_code != 200:
+                                continue
+
+                            workitems = workitems_response.json()
+                            if not isinstance(workitems, list):
+                                continue
+
+                            for workitem in workitems:
+                                record = dict(workitem)
+                                record["organization"] = self.organization
+                                record["project_name"] = project
+                                record["repository_id"] = repo_id
+                                record["pullrequest_id"] = pr_id
+                                all_records.append(record)
+
+            return iter(all_records), {}
+
+        def _read_pullrequest_commits(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Read the `pullrequest_commits` snapshot table.
+
+            This implementation fetches commits included in pull requests.
+
+            GET /{organization}/{project}/_apis/git/repositories/{repositoryId}/pullRequests/{pullRequestId}/commits?api-version=7.1
+            """
+            repository_id = table_options.get("repository_id")
+            pullrequest_id = table_options.get("pullrequest_id")
+
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+
+            # If no project specified, fetch from all projects
+            if not project:
+                projects_iterator, _ = self._read_projects({}, {})
+                projects = [p.get("name") for p in projects_iterator if p.get("name")]
+            else:
+                projects = [project]
+
+            all_records = []
+
+            for project in projects:
+                if repository_id and pullrequest_id:
+                    # Targeted query: specific PR
+                    url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullRequests/{pullrequest_id}/commits"
+                    params = {"api-version": "7.1"}
+
+                    response = self._session.get(url, params=params, timeout=30)
+                    if response.status_code != 200:
+                        raise RuntimeError(
+                            f"Azure DevOps API error for pullrequest_commits: {response.status_code} {response.text}"
+                        )
+
+                    commits_data = response.json()
+                    commits = commits_data.get("value", [])
+
+                    for commit in commits:
+                        record = dict(commit)
+                        record["organization"] = self.organization
+                        record["project_name"] = project
+                        record["repository_id"] = repository_id
+                        record["pullrequest_id"] = int(pullrequest_id)
+                        all_records.append(record)
+
+                elif repository_id:
+                    # Auto-fetch: all PRs in this repository
+                    prs_url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullrequests"
+                    prs_response = self._session.get(
+                        prs_url, params={"api-version": "7.1", "searchCriteria.status": "all"}, timeout=30
+                    )
+                    if prs_response.status_code != 200:
+                        continue
+
+                    prs_data = prs_response.json()
+                    prs = prs_data.get("value", [])
+
+                    for pr in prs:
+                        pr_id = pr.get("pullRequestId")
+                        if not pr_id:
+                            continue
+
+                        commits_url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullRequests/{pr_id}/commits"
+                        commits_response = self._session.get(commits_url, params={"api-version": "7.1"}, timeout=30)
+                        if commits_response.status_code != 200:
+                            continue
+
+                        commits_data = commits_response.json()
+                        commits = commits_data.get("value", [])
+
+                        for commit in commits:
+                            record = dict(commit)
+                            record["organization"] = self.organization
+                            record["project_name"] = project
+                            record["repository_id"] = repository_id
+                            record["pullrequest_id"] = pr_id
+                            all_records.append(record)
+
+                else:
+                    # Auto-fetch: all PRs across all repositories
+                    repos_url = f"{self.base_url}/{project}/_apis/git/repositories"
+                    repos_response = self._session.get(repos_url, params={"api-version": "7.1"}, timeout=30)
+                    if repos_response.status_code != 200:
+                        continue
+
+                    repos_data = repos_response.json()
+                    repos = repos_data.get("value", [])
+
+                    for repo in repos:
+                        repo_id = repo.get("id")
+                        if not repo_id:
+                            continue
+
+                        prs_url = f"{self.base_url}/{project}/_apis/git/repositories/{repo_id}/pullrequests"
+                        prs_response = self._session.get(
+                            prs_url, params={"api-version": "7.1", "searchCriteria.status": "all"}, timeout=30
+                        )
+                        if prs_response.status_code != 200:
+                            continue
+
+                        prs_data = prs_response.json()
+                        prs = prs_data.get("value", [])
+
+                        for pr in prs:
+                            pr_id = pr.get("pullRequestId")
+                            if not pr_id:
+                                continue
+
+                            commits_url = f"{self.base_url}/{project}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/commits"
+                            commits_response = self._session.get(commits_url, params={"api-version": "7.1"}, timeout=30)
+                            if commits_response.status_code != 200:
+                                continue
+
+                            commits_data = commits_response.json()
+                            commits = commits_data.get("value", [])
+
+                            for commit in commits:
+                                record = dict(commit)
+                                record["organization"] = self.organization
+                                record["project_name"] = project
+                                record["repository_id"] = repo_id
+                                record["pullrequest_id"] = pr_id
+                                all_records.append(record)
+
+            return iter(all_records), {}
+
+        def _read_pullrequest_reviewers(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Read the `pullrequest_reviewers` cdc table.
+
+            This implementation fetches reviewer information for pull requests.
+
+            GET /{organization}/{project}/_apis/git/repositories/{repositoryId}/pullRequests/{pullRequestId}/reviewers?api-version=7.1
+            """
+            repository_id = table_options.get("repository_id")
+            pullrequest_id = table_options.get("pullrequest_id")
+
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+
+            # If no project specified, fetch from all projects
+            if not project:
+                projects_iterator, _ = self._read_projects({}, {})
+                projects = [p.get("name") for p in projects_iterator if p.get("name")]
+            else:
+                projects = [project]
+
+            all_records = []
+
+            for project in projects:
+                if repository_id and pullrequest_id:
+                    # Targeted query: specific PR
+                    url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullRequests/{pullrequest_id}/reviewers"
+                    params = {"api-version": "7.1"}
+
+                    response = self._session.get(url, params=params, timeout=30)
+                    if response.status_code != 200:
+                        raise RuntimeError(
+                            f"Azure DevOps API error for pullrequest_reviewers: {response.status_code} {response.text}"
+                        )
+
+                    # Response is a flat array
+                    reviewers = response.json()
+                    if not isinstance(reviewers, list):
+                        reviewers = []
+
+                    for reviewer in reviewers:
+                        record = dict(reviewer)
+                        record["organization"] = self.organization
+                        record["project_name"] = project
+                        record["repository_id"] = repository_id
+                        record["pullrequest_id"] = int(pullrequest_id)
+                        all_records.append(record)
+
+                elif repository_id:
+                    # Auto-fetch: all PRs in this repository
+                    prs_url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullrequests"
+                    prs_response = self._session.get(
+                        prs_url, params={"api-version": "7.1", "searchCriteria.status": "all"}, timeout=30
+                    )
+                    if prs_response.status_code != 200:
+                        continue
+
+                    prs_data = prs_response.json()
+                    prs = prs_data.get("value", [])
+
+                    for pr in prs:
+                        pr_id = pr.get("pullRequestId")
+                        if not pr_id:
+                            continue
+
+                        reviewers_url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullRequests/{pr_id}/reviewers"
+                        reviewers_response = self._session.get(reviewers_url, params={"api-version": "7.1"}, timeout=30)
+                        if reviewers_response.status_code != 200:
+                            continue
+
+                        reviewers = reviewers_response.json()
+                        if not isinstance(reviewers, list):
+                            continue
+
+                        for reviewer in reviewers:
+                            record = dict(reviewer)
+                            record["organization"] = self.organization
+                            record["project_name"] = project
+                            record["repository_id"] = repository_id
+                            record["pullrequest_id"] = pr_id
+                            all_records.append(record)
+
+                else:
+                    # Auto-fetch: all PRs across all repositories
+                    repos_url = f"{self.base_url}/{project}/_apis/git/repositories"
+                    repos_response = self._session.get(repos_url, params={"api-version": "7.1"}, timeout=30)
+                    if repos_response.status_code != 200:
+                        continue
+
+                    repos_data = repos_response.json()
+                    repos = repos_data.get("value", [])
+
+                    for repo in repos:
+                        repo_id = repo.get("id")
+                        if not repo_id:
+                            continue
+
+                        prs_url = f"{self.base_url}/{project}/_apis/git/repositories/{repo_id}/pullrequests"
+                        prs_response = self._session.get(
+                            prs_url, params={"api-version": "7.1", "searchCriteria.status": "all"}, timeout=30
+                        )
+                        if prs_response.status_code != 200:
+                            continue
+
+                        prs_data = prs_response.json()
+                        prs = prs_data.get("value", [])
+
+                        for pr in prs:
+                            pr_id = pr.get("pullRequestId")
+                            if not pr_id:
+                                continue
+
+                            reviewers_url = f"{self.base_url}/{project}/_apis/git/repositories/{repo_id}/pullRequests/{pr_id}/reviewers"
+                            reviewers_response = self._session.get(reviewers_url, params={"api-version": "7.1"}, timeout=30)
+                            if reviewers_response.status_code != 200:
+                                continue
+
+                            reviewers = reviewers_response.json()
+                            if not isinstance(reviewers, list):
+                                continue
+
+                            for reviewer in reviewers:
+                                record = dict(reviewer)
+                                record["organization"] = self.organization
+                                record["project_name"] = project
+                                record["repository_id"] = repo_id
+                                record["pullrequest_id"] = pr_id
+                                all_records.append(record)
+
+            return iter(all_records), {}
+
+        def _read_workitems(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Read the `workitems` cdc table.
+
+            This implementation requires work item IDs to be specified via table_options['ids'].
+            For discovery of all work items, use the workitem_revisions table first.
+
+            GET /{organization}/{project}/_apis/wit/workitems?ids={ids}&api-version=7.1
+            """
+            ids = table_options.get("ids")
+            if not ids:
+                # Return empty if no IDs provided - use workitem_revisions for discovery
+                return iter([]), {}
+
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+
+            # If no project specified, fetch from all projects
+            if not project:
+                projects_iterator, _ = self._read_projects({}, {})
+                projects = [p.get("name") for p in projects_iterator if p.get("name")]
+            else:
+                projects = [project]
+
+            all_records = []
+
+            for project in projects:
+                url = f"{self.base_url}/{project}/_apis/wit/workitems"
+                params = {
+                    "api-version": "7.1",
+                    "ids": ids,
+                    "$expand": "relations",
+                }
+
+                response = self._session.get(url, params=params, timeout=30)
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"Azure DevOps API error for workitems: {response.status_code} {response.text}"
+                    )
+
+                workitems_data = response.json()
+                workitems = workitems_data.get("value", [])
+
+                for workitem in workitems:
+                    record = dict(workitem)
+                    record["organization"] = self.organization
+                    record["project_name"] = project
+
+                    # Convert fields dict to JSON string for storage
+                    import json
+                    if "fields" in record and isinstance(record["fields"], dict):
+                        record["fields"] = json.dumps(record["fields"])
+
+                    all_records.append(record)
+
+            return iter(all_records), {}
+
+        def _read_workitem_revisions(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Read the `workitem_revisions` append table.
+
+            This implementation fetches all revisions of work items incrementally using continuation tokens.
+
+            GET /{organization}/{project}/_apis/wit/reporting/workitemrevisions?api-version=7.1
+            """
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+
+            # If no project specified, fetch from all projects
+            if not project:
+                projects_iterator, _ = self._read_projects({}, {})
+                projects = [p.get("name") for p in projects_iterator if p.get("name")]
+            else:
+                projects = [project]
+
+            all_records = []
+
+            for project in projects:
+                url = f"{self.base_url}/{project}/_apis/wit/reporting/workitemrevisions"
+                params = {
+                    "api-version": "7.1",
+                    "includeDeleted": "true",
+                }
+
+                # Add continuation token from start_offset if present
+                continuation_token = (start_offset or {}).get("continuationToken")
+                if continuation_token:
+                    params["continuationToken"] = continuation_token
+
+                response = self._session.get(url, params=params, timeout=30)
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"Azure DevOps API error for workitem_revisions: {response.status_code} {response.text}"
+                    )
+
+                revisions_data = response.json()
+                revisions = revisions_data.get("values", [])
+
+                for revision in revisions:
+                    record = dict(revision)
+                    record["organization"] = self.organization
+                    record["project_name"] = project
+
+                    # Convert fields dict to JSON string for storage
+                    import json
+                    if "fields" in record and isinstance(record["fields"], dict):
+                        record["fields"] = json.dumps(record["fields"])
+
+                    all_records.append(record)
+
+                # Check for continuation token
+                new_offset = {}
+                next_token = revisions_data.get("continuationToken")
+                if next_token:
+                    new_offset["continuationToken"] = next_token
+                    return iter(all_records), new_offset
+
+            return iter(all_records), {}
+
+        def _read_workitem_types(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Read the `workitem_types` snapshot table.
+
+            This implementation fetches all work item type definitions for a project.
+
+            GET /{organization}/{project}/_apis/wit/workitemtypes?api-version=7.1
+            """
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+
+            # If no project specified, fetch from all projects
+            if not project:
+                projects_iterator, _ = self._read_projects({}, {})
+                projects = [p.get("name") for p in projects_iterator if p.get("name")]
+            else:
+                projects = [project]
+
+            all_records = []
+
+            for project in projects:
+                url = f"{self.base_url}/{project}/_apis/wit/workitemtypes"
+                params = {"api-version": "7.1"}
+
+                response = self._session.get(url, params=params, timeout=30)
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"Azure DevOps API error for workitem_types: {response.status_code} {response.text}"
+                    )
+
+                types_data = response.json()
+                types = types_data.get("value", [])
+
+                for work_type in types:
+                    record = dict(work_type)
+                    record["organization"] = self.organization
+                    record["project_name"] = project
+                    all_records.append(record)
+
+            return iter(all_records), {}
 
 
     ########################################################
