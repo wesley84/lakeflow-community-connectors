@@ -46,6 +46,7 @@ The object list is **static** (defined by the connector), not discovered dynamic
 
 | Object Name | Description | Primary Endpoint | Ingestion Type |
 |------------|-------------|------------------|----------------|
+| `projects` | Projects within an organization | `GET /{organization}/_apis/projects` | `snapshot` |
 | `repositories` | Git repositories within a project | `GET /{organization}/{project}/_apis/git/repositories` | `snapshot` |
 | `commits` | Git commits across repositories | `GET /{organization}/{project}/_apis/git/repositories/{repositoryId}/commits` | `append` |
 | `pullrequests` | Pull requests across repositories | `GET /{organization}/{project}/_apis/git/repositories/{repositoryId}/pullrequests` | `cdc` |
@@ -54,14 +55,21 @@ The object list is **static** (defined by the connector), not discovered dynamic
 | `users` | User identities and profiles in the organization | `GET https://vssps.dev.azure.com/{organization}/_apis/graph/users` | `snapshot` |
 
 **Connector scope**:
-- Supports 6 objects from Azure DevOps REST API v7.1: 5 Git objects + 1 identity object.
-- Git objects require `organization` and `project` connection parameters.
-- The `users` object requires only `organization` connection parameter.
-- Git objects except `repositories` support `repository_id` as an **optional** table option:
+- Supports 7 objects from Azure DevOps REST API v7.1: 1 project object + 5 Git objects + 1 identity object.
+- **Connection parameters**:
+  - `organization` (required) - Azure DevOps organization name
+  - `project` (optional) - If provided, scopes Git operations to specific project; if omitted, Git tables can fetch from all projects
+- The `projects` and `users` objects require only `organization` connection parameter.
+- Git objects support **project auto-discovery**:
+  - **If `project` specified at connection level**: Use that project for all Git operations
+  - **If `project` specified in table_options**: Use that specific project (overrides connection-level setting)
+  - **If neither specified**: Auto-fetch from ALL projects in the organization
+- Git objects except `repositories` also support `repository_id` as an **optional** table option:
   - **If provided**: Fetches data from specific repository only
-  - **If omitted**: Auto-fetches data from ALL repositories in the project
+  - **If omitted**: Auto-fetches data from ALL repositories (in the specified or discovered projects)
 
 High-level notes:
+- **Projects**: Project metadata including name, description, state, visibility, and capabilities.
 - **Repositories**: Repository metadata including configuration, URLs, and project information.
 - **Commits**: Individual Git commits with author, committer, message, tree ID, and parent commits.
 - **Pull Requests**: Pull request metadata including source/target branches, status, reviewers, and completion details.
@@ -77,6 +85,44 @@ High-level notes:
 - Azure DevOps provides a well-defined JSON schema for resources via its REST API documentation.
 - For the connector, we define **tabular schemas** per object, derived from the JSON representation.
 - Nested JSON objects (e.g., `project`, `_links`) are modeled as **nested structures** rather than being fully flattened.
+
+### `projects` object
+
+**Source endpoint**:  
+`GET https://dev.azure.com/{organization}/_apis/projects?api-version=7.1`
+
+**Key behavior**:
+- Returns all projects within an organization that the authenticated user has access to.
+- No built-in incremental cursor; treated as snapshot data.
+- Enables project discovery for multi-project organizations.
+
+**High-level schema (connector view)**:
+
+Top-level fields (all from the Azure DevOps REST API):
+
+| Column Name | Type | Description |
+|------------|------|-------------|
+| `id` | string (UUID) | Unique identifier for the project (GUID format). |
+| `name` | string | Project name. |
+| `description` | string | Project description (may be empty). |
+| `url` | string | API URL for the project resource. |
+| `state` | string | Project state (e.g., `wellFormed`, `createPending`, `deleting`, `deleted`). |
+| `revision` | long | Project revision number (increments with updates). |
+| `visibility` | string | Project visibility (`private` or `public`). |
+| `lastUpdateTime` | string (ISO 8601) | Timestamp of last project update. |
+| `organization` | string | Organization name (connector-derived). |
+
+**Nested structures**:
+
+None for basic project listing. The full project details API returns additional nested structures like capabilities, but the list endpoint provides the essential metadata shown above.
+
+**Primary key**:  
+`id` (the project GUID)
+
+**Notes on data types**:
+- All timestamps are ISO 8601 UTC strings.
+- The `organization` field is added by the connector to provide context.
+- Missing or null values for optional fields (like `description`) are represented as `null` in the schema.
 
 ### `repositories` object (primary table)
 
@@ -678,6 +724,73 @@ Planned ingestion type for Azure DevOps Git objects:
 
 
 ## **Read API for Data Retrieval**
+
+### `projects` read endpoint
+
+- **HTTP method**: `GET`
+- **Endpoint**: `/{organization}/_apis/projects`
+- **Base URL**: `https://dev.azure.com`
+
+**Path parameters**:
+- `organization` (string, required): Azure DevOps organization name.
+
+**Query parameters**:
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `api-version` | string | yes | none | API version. Use `7.1`. |
+| `stateFilter` | string | no | `wellFormed` | Filter by project state. Options: `all`, `createPending`, `deleted`, `deleting`, `new`, `unchanged`, `wellFormed`. |
+| `$top` | integer | no | none | Maximum number of projects to return. |
+| `$skip` | integer | no | 0 | Number of projects to skip. |
+| `continuationToken` | string | no | none | Token for fetching next page of results. |
+
+**Pagination**: 
+- Supports `$top` and `$skip` for basic pagination.
+- Returns `x-ms-continuationtoken` header if more results available.
+- For large organizations, pagination may be needed.
+
+**Example request**:
+
+```bash
+curl -u :{PERSONAL_ACCESS_TOKEN} \
+  -H "Accept: application/json" \
+  "https://dev.azure.com/fabrikam/_apis/projects?api-version=7.1"
+```
+
+**Example response**:
+
+```json
+{
+  "count": 2,
+  "value": [
+    {
+      "id": "6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c",
+      "name": "Fabrikam-Fiber",
+      "description": "Team Foundation Server project",
+      "url": "https://dev.azure.com/fabrikam/_apis/projects/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c",
+      "state": "wellFormed",
+      "revision": 16,
+      "visibility": "private",
+      "lastUpdateTime": "2014-10-27T16:51:27.46Z"
+    },
+    {
+      "id": "3b3ae425-0079-421f-9101-bcf15d6df041",
+      "name": "Fabrikam-Fiber-Git",
+      "description": "Git repository for Fabrikam Fiber",
+      "url": "https://dev.azure.com/fabrikam/_apis/projects/3b3ae425-0079-421f-9101-bcf15d6df041",
+      "state": "wellFormed",
+      "revision": 293015,
+      "visibility": "public",
+      "lastUpdateTime": "2014-10-27T16:55:00.077Z"
+    }
+  ]
+}
+```
+
+**Snapshot strategy**:
+- Fetch all accessible projects in each sync.
+- Compare with previous snapshot to detect additions, updates, and deletions.
+- Project list typically changes infrequently, so full refresh is efficient.
 
 ### `repositories` read endpoint
 

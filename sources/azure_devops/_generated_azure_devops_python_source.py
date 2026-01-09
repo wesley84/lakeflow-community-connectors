@@ -256,6 +256,7 @@ def register_lakeflow_source(spark):
             List names of all tables supported by this connector.
 
             Supported tables:
+            - projects: Projects within an organization
             - repositories: Git repositories within a project
             - commits: Git commits across repositories
             - pullrequests: Pull requests across repositories
@@ -263,7 +264,7 @@ def register_lakeflow_source(spark):
             - pushes: Git push events to repositories
             - users: User identities and profiles in the organization
             """
-            return ["repositories", "commits", "pullrequests", "refs", "pushes", "users"]
+            return ["projects", "repositories", "commits", "pullrequests", "refs", "pushes", "users"]
 
         def get_table_schema(
             self, table_name: str, table_options: dict[str, str]
@@ -363,6 +364,22 @@ def register_lakeflow_source(spark):
                     StructField("newObjectId", StringType(), True),
                 ]
             )
+
+            if table_name == "projects":
+                projects_schema = StructType(
+                    [
+                        StructField("id", StringType(), False),
+                        StructField("name", StringType(), True),
+                        StructField("description", StringType(), True),
+                        StructField("url", StringType(), True),
+                        StructField("state", StringType(), True),
+                        StructField("revision", LongType(), True),
+                        StructField("visibility", StringType(), True),
+                        StructField("lastUpdateTime", StringType(), True),
+                        StructField("organization", StringType(), False),
+                    ]
+                )
+                return projects_schema
 
             if table_name == "repositories":
                 repositories_schema = StructType(
@@ -500,6 +517,12 @@ def register_lakeflow_source(spark):
             if table_name not in self.list_tables():
                 raise ValueError(f"Unsupported table: {table_name!r}")
 
+            if table_name == "projects":
+                return {
+                    "primary_keys": ["id"],
+                    "ingestion_type": "snapshot",
+                }
+
             if table_name == "repositories":
                 return {
                     "primary_keys": ["id"],
@@ -556,6 +579,9 @@ def register_lakeflow_source(spark):
             if table_name not in self.list_tables():
                 raise ValueError(f"Unsupported table: {table_name!r}")
 
+            if table_name == "projects":
+                return self._read_projects(start_offset, table_options)
+
             if table_name == "repositories":
                 return self._read_repositories(start_offset, table_options)
 
@@ -576,25 +602,84 @@ def register_lakeflow_source(spark):
 
             raise ValueError(f"Unsupported table: {table_name!r}")
 
+        def _read_projects(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Read the `projects` snapshot table.
+
+            This implementation lists all projects in the configured organization
+            using the Azure DevOps REST API:
+
+                GET /{organization}/_apis/projects?api-version=7.1
+
+            The returned JSON objects are enriched with connector-derived fields:
+                - organization: The organization name from connection config.
+            """
+            url = f"{self.base_url}/_apis/projects"
+            params = {
+                "api-version": "7.1",
+            }
+
+            response = self._session.get(url, params=params, timeout=30)
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Azure DevOps API error for projects: {response.status_code} {response.text}"
+                )
+
+            response_json = response.json()
+            if not isinstance(response_json, dict):
+                raise ValueError(
+                    f"Unexpected response format for projects: {type(response_json).__name__}"
+                )
+
+            projects = response_json.get("value", [])
+            if not isinstance(projects, list):
+                raise ValueError(
+                    f"Unexpected 'value' format in projects response: {type(projects).__name__}"
+                )
+
+            records: list[dict[str, Any]] = []
+            for project_obj in projects:
+                # Shallow-copy the raw JSON and add connector-derived fields
+                record: dict[str, Any] = dict(project_obj)
+                record["organization"] = self.organization
+
+                records.append(record)
+
+            # Snapshot ingestion: return empty offset
+            return iter(records), {}
+
         def _read_repositories(
             self, start_offset: dict, table_options: dict[str, str]
         ) -> (Iterator[dict], dict):
             """
             Read the `repositories` snapshot table.
 
-            This implementation lists all Git repositories in the configured project
-            using the Azure DevOps REST API:
+            This implementation lists all Git repositories using the Azure DevOps REST API:
 
                 GET /{organization}/{project}/_apis/git/repositories?api-version=7.1
+
+            Project resolution:
+            - If `project` is in table_options, use that project
+            - Else if self.project is set (connection-level), use that
+            - Else fetch from all projects in the organization (auto-discovery)
 
             Note: API version 7.1 is used instead of 7.2 to avoid preview version
             requirements. Version 7.2 requires the -preview flag as of this implementation.
 
             The returned JSON objects are enriched with connector-derived fields:
                 - organization: The organization name from connection config.
-                - project_name: The project name from connection config.
+                - project_name: The project name from the fetched data.
             """
-            url = f"{self.base_url}/{self.project}/_apis/git/repositories"
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+
+            # If no project specified, fetch from all projects
+            if not project:
+                return self._read_repositories_all_projects(start_offset, table_options)
+
+            url = f"{self.base_url}/{project}/_apis/git/repositories"
             params = {
                 "api-version": "7.1",
                 "includeLinks": "true",
@@ -624,7 +709,7 @@ def register_lakeflow_source(spark):
                 # Shallow-copy the raw JSON and add connector-derived fields
                 record: dict[str, Any] = dict(repo_obj)
                 record["organization"] = self.organization
-                record["project_name"] = self.project
+                record["project_name"] = project
 
                 # Ensure nested structs that are absent are represented as None, not {}
                 if "parentRepository" not in record or record["parentRepository"] == {}:
@@ -638,6 +723,40 @@ def register_lakeflow_source(spark):
 
             # Snapshot ingestion: return empty offset
             return iter(records), {}
+
+        def _read_repositories_all_projects(
+            self, start_offset: dict, table_options: dict[str, str]
+        ) -> (Iterator[dict], dict):
+            """
+            Helper method to fetch repositories from ALL projects in the organization.
+
+            This is called when no project is specified at connection or table level.
+            """
+            # First, get all projects
+            projects_iterator, _ = self._read_projects({}, {})
+            projects = list(projects_iterator)
+
+            all_records: list[dict[str, Any]] = []
+
+            for project_obj in projects:
+                project_name = project_obj.get("name")
+                if not project_name:
+                    continue
+
+                # Fetch repositories for this project
+                try:
+                    # Create a temporary table_options with this project
+                    temp_options = dict(table_options)
+                    temp_options["project"] = project_name
+
+                    # Recursively call _read_repositories with this specific project
+                    repos_iterator, _ = self._read_repositories({}, temp_options)
+                    all_records.extend(list(repos_iterator))
+                except Exception:
+                    # Skip projects that fail (might not have Git enabled)
+                    continue
+
+            return iter(all_records), {}
 
         def _read_commits(
             self, start_offset: dict, table_options: dict[str, str]
@@ -657,7 +776,12 @@ def register_lakeflow_source(spark):
             if not repository_id:
                 return self._read_commits_all_repos(start_offset, table_options)
 
-            url = f"{self.base_url}/{self.project}/_apis/git/repositories/{repository_id}/commits"
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+            if not project:
+                raise ValueError("Project must be specified either at connection level or in table_options when repository_id is provided")
+
+            url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/commits"
 
             # Get pagination offset from start_offset
             skip = start_offset.get("skip", 0)
@@ -691,7 +815,7 @@ def register_lakeflow_source(spark):
             for commit_obj in commits:
                 record: dict[str, Any] = dict(commit_obj)
                 record["organization"] = self.organization
-                record["project_name"] = self.project
+                record["project_name"] = project
                 record["repository_id"] = repository_id
 
                 # Ensure nested structs are None if absent
@@ -773,7 +897,12 @@ def register_lakeflow_source(spark):
             if not repository_id:
                 return self._read_pullrequests_all_repos(start_offset, table_options)
 
-            url = f"{self.base_url}/{self.project}/_apis/git/repositories/{repository_id}/pullrequests"
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+            if not project:
+                raise ValueError("Project must be specified either at connection level or in table_options when repository_id is provided")
+
+            url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pullrequests"
 
             status_filter = table_options.get("status_filter", "all")
 
@@ -804,7 +933,7 @@ def register_lakeflow_source(spark):
             for pr_obj in prs:
                 record: dict[str, Any] = dict(pr_obj)
                 record["organization"] = self.organization
-                record["project_name"] = self.project
+                record["project_name"] = project
                 record["repository_id"] = repository_id
 
                 # Ensure nested structs are None if absent
@@ -882,7 +1011,12 @@ def register_lakeflow_source(spark):
             if not repository_id:
                 return self._read_refs_all_repos(start_offset, table_options)
 
-            url = f"{self.base_url}/{self.project}/_apis/git/repositories/{repository_id}/refs"
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+            if not project:
+                raise ValueError("Project must be specified either at connection level or in table_options when repository_id is provided")
+
+            url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/refs"
 
             params = {
                 "api-version": "7.1",
@@ -915,7 +1049,7 @@ def register_lakeflow_source(spark):
             for ref_obj in refs:
                 record: dict[str, Any] = dict(ref_obj)
                 record["organization"] = self.organization
-                record["project_name"] = self.project
+                record["project_name"] = project
                 record["repository_id"] = repository_id
 
                 # Ensure nested structs are None if absent
@@ -988,7 +1122,12 @@ def register_lakeflow_source(spark):
             if not repository_id:
                 return self._read_pushes_all_repos(start_offset, table_options)
 
-            url = f"{self.base_url}/{self.project}/_apis/git/repositories/{repository_id}/pushes"
+            # Determine which project to use
+            project = table_options.get("project") or self.project
+            if not project:
+                raise ValueError("Project must be specified either at connection level or in table_options when repository_id is provided")
+
+            url = f"{self.base_url}/{project}/_apis/git/repositories/{repository_id}/pushes"
 
             # Get pagination offset from start_offset
             skip = start_offset.get("skip", 0)
@@ -1022,7 +1161,7 @@ def register_lakeflow_source(spark):
             for push_obj in pushes:
                 record: dict[str, Any] = dict(push_obj)
                 record["organization"] = self.organization
-                record["project_name"] = self.project
+                record["project_name"] = project
                 record["repository_id"] = repository_id
 
                 # Ensure nested structs are None if absent

@@ -1,9 +1,13 @@
 {
+  "projects": {},
   "repositories": {},
-  "commits": {},
+  "commits": {
+    "project": "databricks-nutter-repos-demo",
+    "repository_id": "ee1fb5c4-18b4-47b7-8abb-9ade3bd58d6d"
+  },
   "pullrequests": {
-    "repository_id": "e39fba9d-6cf8-4cfb-a4b9-1714d52d160b",
-    "status_filter": "all"
+    "project": "databricks-nutter-repos-demo",
+    "repository_id": "ee1fb5c4-18b4-47b7-8abb-9ade3bd58d6d"
   },
   "refs": {},
   "pushes": {},

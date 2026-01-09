@@ -23,11 +23,11 @@ Provide the following **connection-level** options when configuring the connecto
 | Name                     | Type   | Required | Description                                                                                 | Example                            |
 |--------------------------|--------|----------|---------------------------------------------------------------------------------------------|------------------------------------|
 | `organization`           | string | yes      | Azure DevOps organization name. This is the organization segment in the Azure DevOps URL.  | `my-organization`                  |
-| `project`                | string | yes      | Project name or ID. Specifies which Azure DevOps project to read Git data from.           | `my-project`                       |
+| `project`                | string | no       | Project name or ID. If provided, scopes Git operations to this project. If omitted, Git tables can fetch from all projects. | `my-project`                       |
 | `personal_access_token`  | string | yes      | Personal Access Token (PAT) used for authentication with Azure DevOps Services REST API.   | `7tq...qDnpdg1Nitj8JQQJ99BLAC...` |
-| `externalOptionsAllowList` | string | yes    | Comma-separated list of allowed table-specific options. Must be set to: `repository_id,status_filter,filter` | `repository_id,status_filter,filter` |
+| `externalOptionsAllowList` | string | yes    | Comma-separated list of allowed table-specific options. Must be set to: `project,repository_id,status_filter,filter` | `project,repository_id,status_filter,filter` |
 
-**Important**: The `externalOptionsAllowList` parameter is **required** because some tables (`commits`, `pullrequests`, `refs`, `pushes`) require table-specific configuration options.
+**Important**: The `externalOptionsAllowList` parameter is **required** because Git tables support table-specific configuration options (`project`, `repository_id`, `status_filter`, `filter`).
 
 ### Obtaining the Required Parameters
 
@@ -66,7 +66,10 @@ The connection can also be created using the standard Unity Catalog API.
 
 ## Supported Objects
 
-The Azure DevOps connector exposes a **static list** of 6 tables:
+The Azure DevOps connector exposes a **static list** of 7 tables:
+
+**Organization tables:**
+- `projects` - Projects within an organization
 
 **Git-related tables:**
 - `repositories` - Git repository metadata
@@ -84,8 +87,9 @@ The connector defines the ingestion mode and primary key for each table:
 
 | Table          | Description                                           | Ingestion Type | Primary Key                       | Incremental Cursor (if any) |
 |----------------|-------------------------------------------------------|----------------|-----------------------------------|-----------------------------|
+| `projects`     | Projects within an Azure DevOps organization           | `snapshot`     | `id`                              | n/a                         |
 | `repositories` | Git repository metadata within an Azure DevOps project | `snapshot`     | `id`                              | n/a                         |
-| `commits`      | Git commits across all repositories in the project     | `append`       | `commitId`, `repository_id`       | n/a                         |
+| `commits`      | Git commits across all repositories                    | `append`       | `commitId`, `repository_id`       | n/a                         |
 | `pullrequests` | Pull requests with merge status and reviewers          | `cdc`          | `pullRequestId`, `repository_id`  | `closedDate`                |
 | `refs`         | Git references (branches and tags) per repository      | `snapshot`     | `name`, `repository_id`           | n/a                         |
 | `pushes`       | Git push events to repositories                        | `append`       | `pushId`, `repository_id`         | n/a                         |
@@ -97,21 +101,36 @@ Each table has different configuration requirements:
 
 | Table          | Required Options | Optional Options | Notes |
 |----------------|------------------|------------------|-------|
-| `repositories` | None             | None             | Uses connection-level `organization` and `project` |
-| `commits`      | None             | `repository_id`  | If `repository_id` omitted: auto-fetches from ALL repos; if provided: fetches from specific repo only |
-| `pullrequests` | None             | `repository_id`, `status_filter` | If `repository_id` omitted: auto-fetches from ALL repos; `status_filter`: `active`, `completed`, `abandoned`, or `all` (default: `all`) |
-| `refs`         | None             | `repository_id`, `filter` | If `repository_id` omitted: auto-fetches from ALL repos; `filter` for branches (`heads/`) or tags (`tags/`) |
-| `pushes`       | None             | `repository_id`  | If `repository_id` omitted: auto-fetches from ALL repos; if provided: fetches from specific repo only |
+| `projects`     | None             | None             | Uses connection-level `organization`; fetches all projects in the organization |
+| `repositories` | None             | `project`        | If `project` omitted: uses connection-level project OR fetches from ALL projects |
+| `commits`      | None             | `project`, `repository_id`  | Project and repository auto-discovery supported |
+| `pullrequests` | None             | `project`, `repository_id`, `status_filter` | Project and repository auto-discovery supported; `status_filter`: `active`, `completed`, `abandoned`, or `all` (default: `all`) |
+| `refs`         | None             | `project`, `repository_id`, `filter` | Project and repository auto-discovery supported; `filter` for branches (`heads/`) or tags (`tags/`) |
+| `pushes`       | None             | `project`, `repository_id`  | Project and repository auto-discovery supported |
 | `users`        | None             | None             | Uses connection-level `organization`; fetches all users in the organization |
 
 **Important Notes**:
-- **Auto-fetch mode** (repository_id omitted): Connector automatically fetches data from ALL repositories in the project. The `repository_id` field is populated as a foreign key for each record.
+
+**Project Discovery**:
+- **Connection-level project**: If `project` is specified at connection level, all Git tables default to that project
+- **Table-level project**: Use `project` in table_options to override connection-level or fetch from a specific project
+- **Auto-discovery**: If no project specified anywhere, Git tables automatically fetch from ALL projects in the organization
+- To discover available projects, query the `projects` table first
+
+**Repository Discovery**:
+- **Auto-fetch mode** (repository_id omitted): Connector automatically fetches data from ALL repositories. The `repository_id` field is populated as a foreign key for each record.
 - **Targeted mode** (repository_id provided): Connector fetches data only from the specified repository. More efficient for large projects with many repositories.
-- To obtain `repository_id` values, first query the `repositories` table and use the `id` field.
+- To obtain `repository_id` values, query the `repositories` table and use the `id` field.
 
 ### Schema highlights
 
 All table schemas preserve the nested JSON structure from the Azure DevOps API rather than flattening it. Key fields for each table:
+
+#### `projects` table (9 fields)
+- **Identity**: `id` (UUID string), `name`
+- **Details**: `description`, `state`, `visibility`
+- **Metadata**: `revision`, `lastUpdateTime`, `url`
+- **Connector-derived**: `organization`
 
 #### `repositories` table (16 fields)
 - **Identity**: `id` (UUID string), `name`
@@ -208,7 +227,26 @@ In your pipeline code (e.g., `ingestion_pipeline.py` or a similar entrypoint), c
 - A **Unity Catalog connection** that uses this Azure DevOps connector.
 - One or more **tables** to ingest.
 
-#### Example 1: Ingest repositories (no table options required)
+#### Example 1: Ingest projects table
+
+```json
+{
+  "pipeline_spec": {
+    "connection_name": "azure_devops_connection",
+    "object": [
+      {
+        "table": {
+          "source_table": "projects"
+        }
+      }
+    ]
+  }
+}
+```
+
+**What happens**: The connector fetches all projects in the organization. Use this to discover available projects.
+
+#### Example 2: Ingest repositories (with connection-level project)
 
 ```json
 {
@@ -224,6 +262,8 @@ In your pipeline code (e.g., `ingestion_pipeline.py` or a similar entrypoint), c
   }
 }
 ```
+
+**What happens**: If your connection has `project` specified, repositories from that project are fetched. If no `project` in connection, repositories from ALL projects are fetched.
 
 #### Example 2a: Ingest commits from ALL repositories (auto-fetch)
 
