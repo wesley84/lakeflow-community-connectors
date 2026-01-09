@@ -1,11 +1,16 @@
 {
   "projects": {},
   "repositories": {},
-  "commits": {
-  },
-  "pullrequests": {
-  },
+  "commits": {},
+  "pullrequests": {},
+  "pullrequest_threads": {},
+  "pullrequest_workitems": {},
+  "pullrequest_commits": {},
+  "pullrequest_reviewers": {},
   "refs": {},
   "pushes": {},
-  "users": {}
+  "users": {},
+  "workitems": {},
+  "workitem_revisions": {},
+  "workitem_types": {}
 }
