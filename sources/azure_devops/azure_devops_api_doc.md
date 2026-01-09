@@ -872,7 +872,7 @@ curl -u :{PERSONAL_ACCESS_TOKEN} \
 
 **Key behavior**:
 - Returns work items (tasks, bugs, user stories, features, epics, etc.) with all fields.
-- Requires work item IDs to be specified - typically obtained from queries or revision endpoints.
+- **Optional IDs**: If `ids` table option is provided, fetches specific work items. If omitted, uses WIQL to auto-discover and fetch all work items in the project(s).
 - Supports batch retrieval of up to 200 work items per request.
 - CDC ingestion - work items can be created, updated, or soft-deleted.
 - Fields are dynamic based on work item type and process template.
