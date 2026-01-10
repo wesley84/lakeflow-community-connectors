@@ -10,7 +10,9 @@
   "refs": {},
   "pushes": {},
   "users": {},
-  "workitems": {},
+  "workitems": {
+    "ids": "1,2"
+  },
   "workitem_revisions": {},
   "workitem_types": {}
 }

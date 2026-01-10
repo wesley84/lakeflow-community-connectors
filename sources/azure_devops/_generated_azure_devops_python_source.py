@@ -2104,15 +2104,13 @@ def register_lakeflow_source(spark):
             """
             Read the `workitems` cdc table.
 
-            This implementation requires work item IDs to be specified via table_options['ids'].
-            For discovery of all work items, use the workitem_revisions table first.
+            If 'ids' is provided in table_options, fetches those specific work items.
+            If 'ids' is not provided, uses WIQL to discover and fetch all work items.
 
             GET /{organization}/{project}/_apis/wit/workitems?ids={ids}&api-version=7.1
+            POST /{organization}/{project}/_apis/wit/wiql?api-version=7.1
             """
             ids = table_options.get("ids")
-            if not ids:
-                # Return empty if no IDs provided - use workitem_revisions for discovery
-                return iter([]), {}
 
             # Determine which project to use
             project = table_options.get("project") or self.project
@@ -2127,10 +2125,41 @@ def register_lakeflow_source(spark):
             all_records = []
 
             for project in projects:
+                # If no IDs provided, use WIQL to discover all work items
+                if not ids:
+                    wiql_url = f"{self.base_url}/{project}/_apis/wit/wiql"
+                    wiql_query = {
+                        "query": "SELECT [System.Id] FROM WorkItems"
+                    }
+                    wiql_response = self._session.post(
+                        wiql_url,
+                        json=wiql_query,
+                        params={"api-version": "7.1"},
+                        timeout=30
+                    )
+                    if wiql_response.status_code != 200:
+                        raise RuntimeError(
+                            f"Azure DevOps API error for workitems WIQL: {wiql_response.status_code} {wiql_response.text}"
+                        )
+
+                    wiql_results = wiql_response.json()
+                    work_item_refs = wiql_results.get("workItems", [])
+
+                    # If no work items found in this project, skip
+                    if not work_item_refs:
+                        continue
+
+                    # Extract IDs from WIQL results
+                    discovered_ids = [str(ref.get("id")) for ref in work_item_refs if ref.get("id")]
+                    ids_to_fetch = ",".join(discovered_ids)
+                else:
+                    ids_to_fetch = ids
+
+                # Fetch work items by IDs
                 url = f"{self.base_url}/{project}/_apis/wit/workitems"
                 params = {
                     "api-version": "7.1",
-                    "ids": ids,
+                    "ids": ids_to_fetch,
                     "$expand": "relations",
                 }
 

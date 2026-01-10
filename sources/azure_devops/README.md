@@ -134,7 +134,7 @@ Each table has different configuration requirements:
 | `refs`                  | None             | `project`, `repository_id`, `filter` | Project and repository auto-discovery supported; `filter` for branches (`heads/`) or tags (`tags/`) |
 | `pushes`                | None             | `project`, `repository_id`  | Project and repository auto-discovery supported |
 | `users`                 | None             | None             | Uses connection-level `organization`; fetches all users in the organization |
-| `workitems`             | `ids`            | `project`        | Requires comma-separated work item IDs; use `workitem_revisions` to discover IDs |
+| `workitems`             | None             | `project`, `ids` | Optional `ids` for specific work items; omit to fetch all work items via WIQL |
 | `workitem_revisions`    | None             | `project`        | Fetches all revisions incrementally; project auto-discovery supported |
 | `workitem_types`        | None             | `project`        | Fetches all type definitions; project auto-discovery supported |
 
