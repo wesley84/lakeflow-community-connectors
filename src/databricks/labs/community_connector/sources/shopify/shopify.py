@@ -255,12 +255,21 @@ class ShopifyLakeflowConnect(LakeflowConnect):
             order_id = order.get("id")
             if not order_id:
                 continue
-            data, _ = api_get(
-                self._session,
-                f"{self.base_url}/orders/{order_id}/{sub_resource}.json",
-                params=None,
-                label=sub_resource,
-            )
+            try:
+                data, _ = api_get(
+                    self._session,
+                    f"{self.base_url}/orders/{order_id}/{sub_resource}.json",
+                    params=None,
+                    label=sub_resource,
+                )
+            except RuntimeError as exc:
+                # Skip individual orders that fail (e.g. permissions on a
+                # specific order) so the whole batch doesn't blow up.
+                _LOG.warning(
+                    "Skipping %s for order %s: %s",
+                    sub_resource, order_id, exc,
+                )
+                continue
             for item in data.get(sub_resource, []):
                 ts = item.get(cursor_field)
                 if since and ts and ts <= since:
