@@ -42,6 +42,16 @@ This path is available on dev stores under any Partner organization, and on merc
 6. Save → switch to the **API credentials** tab → click **Install app**.
 7. Copy the **Admin API access token** (`shpat_...`). You can only view this once — store it securely.
 
+> **⚠️ Important — Protected Customer Data Access (PCDA)**
+>
+> If you're ingesting the `customers` table, the `email`, `first_name`, `last_name`, `phone`, and address-line fields are **silently redacted from the API response** unless the app has Protected Customer Data Access configured. This is a Shopify privacy policy, not a connector behavior — every record will come back with these fields as `null` until PCDA is granted.
+>
+> To enable: in the same app, **Configuration** tab → **Protected customer data access** section → **Configure** (or **Request access**) → declare the data fields you'll process (Name, Email, Phone, Address) and the reason. After saving, the API returns the full PII fields without any token reissue.
+>
+> PCDA configuration UI is available on Shopify Advanced and Plus plans (and on dev stores when the simulated plan tier is set to Advanced or higher). On lower-tier stores, the PII fields will remain null.
+>
+> See: [shopify.dev/docs/apps/launch/protected-customer-data](https://shopify.dev/docs/apps/launch/protected-customer-data).
+
 **Path B — Dev Dashboard / OAuth (newer stores, public app distribution)**
 
 For stores transferred to merchants after Jan 1 2026, custom apps must be created via the Shopify Dev Dashboard with an OAuth flow. The OAuth flow exchanges a code for the same kind of `shpat_...` token, which is what the connector accepts.
@@ -174,6 +184,12 @@ The first run does a full backfill across all tables (CDC tables also fetch all 
 **Fix:**
 - Verify the token is still valid by calling `GET /admin/api/{api_version}/shop.json` with the `X-Shopify-Access-Token` header. A 200 confirms auth works.
 - If the token is invalid, follow the Setup → Path A steps to install a new app and obtain a fresh token.
+
+### `customers` table has null `email`, `first_name`, `last_name`, `phone`
+
+**Cause:** Shopify's Protected Customer Data Access (PCDA) policy redacts customer PII from API responses unless the app has been granted PCDA. The records exist in Shopify with full data — Shopify is filtering it out at the API layer.
+
+**Fix:** Configure PCDA in the app — see the **"Important — Protected Customer Data Access"** callout in the Setup section above. After enabling, no token reissue is needed; the next sync returns the full fields.
 
 ### Missing tables / "Insufficient access" on a specific table
 
