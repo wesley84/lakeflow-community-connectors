@@ -1155,7 +1155,8 @@ def register_lakeflow_source(spark):
             (400); that value is valid only on ``/responsibilities`` and
             ``/relations``. We therefore default to ``ID`` (stable keyset order),
             and the ``lastModifiedOn`` incremental cursor is applied CLIENT-SIDE
-            (see ``_read_cdc_incremental``) rather than relying on server ordering.
+            (see ``_incremental_from_iter`` / ``_incremental_assets_resumable``)
+            rather than relying on server ordering.
             Overridable via the ``sort_field`` table option (NAME/DISPLAY_NAME/ID).
             """
             sort_field = table_options.get("sort_field", "ID")

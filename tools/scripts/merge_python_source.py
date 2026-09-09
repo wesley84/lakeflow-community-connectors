@@ -46,18 +46,35 @@ OPTIONAL_SHARED_LIBS = ("resumable",)
 
 
 def get_referenced_shared_libs(file_contents: List[str]) -> List[str]:
-    """Return the OPTIONAL_SHARED_LIBS a source imports (in declared order).
+    """Return the OPTIONAL_SHARED_LIBS a source (transitively) imports.
 
     Scans the given file contents (the main source plus its library files) for
-    ``from ...libs.<name> import`` of any optional shared lib, so only libs a
-    source actually uses get inlined into its merged file.
+    ``from ...libs.<name> import`` of any optional shared lib, then follows
+    shared-lib -> shared-lib imports so that a lib which itself imports another
+    shared lib pulls that dependency in too (otherwise the dependency's code
+    would be referenced but never inlined -> NameError at SDP runtime). Only
+    libs a source actually uses get inlined into its merged file.
+
+    The result is ordered by OPTIONAL_SHARED_LIBS declaration order, so declare
+    a shared lib before any other that depends on it to keep the inlined
+    definitions in dependency order.
     """
-    referenced = []
-    for lib in OPTIONAL_SHARED_LIBS:
-        needle = f"from databricks.labs.community_connector.libs.{lib} import"
-        if any(needle in content for content in file_contents):
-            referenced.append(lib)
-    return referenced
+    libs_dir = PROJECT_ROOT / "src" / "databricks" / "labs" / "community_connector" / "libs"
+    referenced = set()
+    pending = list(file_contents)
+    while pending:
+        content = pending.pop()
+        for lib in OPTIONAL_SHARED_LIBS:
+            if lib in referenced:
+                continue
+            needle = f"from databricks.labs.community_connector.libs.{lib} import"
+            if needle in content:
+                referenced.add(lib)
+                # Follow this lib's own imports to catch transitive shared libs.
+                lib_path = libs_dir / f"{lib}.py"
+                if lib_path.exists():
+                    pending.append(read_file_content(lib_path))
+    return [lib for lib in OPTIONAL_SHARED_LIBS if lib in referenced]
 
 
 def load_exclude_config() -> Dict:
