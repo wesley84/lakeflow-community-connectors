@@ -180,6 +180,10 @@ DATA_PRODUCTS_SCHEMA = StructType(
         StructField("managedAttributes", ArrayType(MANAGED_ATTRIBUTE_STRUCT), True),
         StructField("additionalProperties", ADDITIONAL_PROPERTIES_STRUCT, True),
         StructField("systemData", SYSTEM_DATA_STRUCT, True),
+        # Top-level copy of systemData.lastModifiedAt, promoted so it can serve
+        # as the cdc sequence_by column (SDP APPLY CHANGES cannot resolve a
+        # nested/dotted sequence_by path — see CURSOR_FIELD note below).
+        StructField("last_modified_at", StringType(), True),
         StructField("purview_tenant_id", StringType(), False),
     ]
 )
@@ -198,6 +202,8 @@ TERMS_SCHEMA = StructType(
         StructField("resources", ArrayType(TERM_RESOURCE_STRUCT), True),
         StructField("managedAttributes", ArrayType(MANAGED_ATTRIBUTE_STRUCT), True),
         StructField("systemData", SYSTEM_DATA_STRUCT, True),
+        # Top-level copy of systemData.lastModifiedAt (see DATA_PRODUCTS_SCHEMA).
+        StructField("last_modified_at", StringType(), True),
         StructField("purview_tenant_id", StringType(), False),
     ]
 )
@@ -214,9 +220,15 @@ TABLE_SCHEMAS: dict[str, StructType] = {
 # Table metadata
 # =============================================================================
 
-# The incremental cursor lives at a nested path: ``systemData.lastModifiedAt``.
-# The framework supports dotted-path cursor_field / primary_keys.
-CURSOR_FIELD = "systemData.lastModifiedAt"
+# The source cursor lives at a nested path (``systemData.lastModifiedAt``), but
+# SDP's managed CDC (APPLY CHANGES) maps ``cursor_field`` to ``sequence_by`` and
+# cannot resolve a nested/dotted sequence_by path (SEQUENCE_BY_COLUMN_NOT_FOUND).
+# So the cdc readers promote that value to a top-level ``last_modified_at``
+# column (see the cdc schemas) and the cursor_field points at that. The
+# connector's own client-side incremental read still reads the nested value
+# directly (see ``_record_cursor``); this constant is only the declared
+# sequence_by column.
+CURSOR_FIELD = "last_modified_at"
 
 TABLE_METADATA: dict[str, dict] = {
     # Governance domains are a low-volume taxonomy that changes infrequently —

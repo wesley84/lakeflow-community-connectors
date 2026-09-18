@@ -351,6 +351,17 @@ class TestShaping:
         assert conn._shape_data_product({"id": "p"})["purview_tenant_id"] == "tid-1"
         assert conn._shape_term({"id": "t"})["purview_tenant_id"] == "tid-1"
 
+    def test_cdc_shapers_promote_cursor_to_top_level(self):
+        """data_products/terms promote systemData.lastModifiedAt to a top-level
+        ``last_modified_at`` column so it can serve as the cdc sequence_by
+        (SDP APPLY CHANGES can't resolve a nested sequence_by path)."""
+        conn = _connector()
+        raw = {"id": "x", "systemData": {"lastModifiedAt": "2026-09-18T00:00:00+00:00"}}
+        assert conn._shape_data_product(raw)["last_modified_at"] == "2026-09-18T00:00:00+00:00"
+        assert conn._shape_term(raw)["last_modified_at"] == "2026-09-18T00:00:00+00:00"
+        # business_domains is a snapshot — no cursor column promoted.
+        assert "last_modified_at" not in conn._shape_business_domain({"id": "d"})
+
     def test_normalize_contacts_keeps_declared_roles_and_coerces(self):
         value = {
             "owner": [{"id": "o1", "description": "d", "extra": "dropped"}],

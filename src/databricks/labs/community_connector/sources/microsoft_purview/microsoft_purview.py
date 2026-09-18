@@ -334,12 +334,16 @@ class MicrosoftPurviewLakeflowConnect(LakeflowConnect):
     def _shape_data_product(self, raw: dict[str, Any]) -> dict[str, Any]:
         rec = dict(raw)
         rec["contacts"] = normalize_contacts(raw.get("contacts"))
+        # Promote the nested cursor to a top-level column for cdc sequence_by.
+        rec["last_modified_at"] = self._record_cursor(raw)
         rec["purview_tenant_id"] = self.tenant_id
         return rec
 
     def _shape_term(self, raw: dict[str, Any]) -> dict[str, Any]:
         rec = dict(raw)
         rec["contacts"] = normalize_contacts(raw.get("contacts"))
+        # Promote the nested cursor to a top-level column for cdc sequence_by.
+        rec["last_modified_at"] = self._record_cursor(raw)
         rec["purview_tenant_id"] = self.tenant_id
         return rec
 
