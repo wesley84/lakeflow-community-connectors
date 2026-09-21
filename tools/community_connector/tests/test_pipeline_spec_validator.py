@@ -370,7 +370,7 @@ class TestWarnings:
             ],
         }
         warnings = validate_pipeline_spec(spec)
-        assert warnings == []
+        assert not warnings
 
     def test_unknown_object_keys(self):
         """Test warning for unknown keys in object."""
