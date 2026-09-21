@@ -6,6 +6,8 @@ The connector performs a **read-only** extract of governance domains (business d
 
 > **Public preview API.** This connector targets the Purview Unified Catalog Data Governance data-plane API at `api-version=2026-03-20-preview`, which is in **public preview**. Field names, endpoint shapes, and the `api-version` string can change before general availability. See [Limitations](#limitations).
 
+> **Not affiliated with Microsoft.** This is a community-maintained Lakeflow connector. It is **not** affiliated with, approved, endorsed, or sponsored by Microsoft. "Microsoft Purview", "Microsoft Entra", and "Azure" are trademarks of the Microsoft group of companies, used here solely to identify the source system the connector reads from.
+
 ## Prerequisites
 
 - **A Microsoft Purview account with the Unified Catalog enabled**, reachable at the shared data-plane endpoint `https://api.purview-service.microsoft.com`.
