@@ -8,7 +8,8 @@ this file targets the pieces that harness does not fully drive:
 * auth / connection configuration (token precedence, required options),
 * the ``nextLink`` pagination helper (all three endpoints share it),
 * retry + non-200 error handling,
-* the client-side incremental cursor engine (strict ``> since`` boundary, the
+* the client-side incremental cursor engine (inclusive ``>= since`` boundary so
+  same-second records aren't lost, the
   init-time upper cap, and convergence when no forward progress is made),
 * record shaping (``purview_tenant_id`` stamping, contacts normalization).
 """
@@ -239,10 +240,16 @@ class TestRetryAndErrors:
 
 
 class TestIncrementalEngine:
-    def test_strict_greater_than_since_does_not_reemit_boundary(self):
+    def test_inclusive_boundary_reemits_same_second_records(self):
+        """The cursor (systemData.lastModifiedAt) is second-granular, so records
+        can share the watermark second. The boundary is inclusive (``>= since``):
+        a record at exactly ``since`` is re-emitted rather than dropped, so a
+        same-second record arriving after the watermark reached that second is
+        not lost. Re-emitted boundary rows are deduped downstream by the CDC
+        primary-key upsert."""
         conn = _connector()
         arrival = [
-            _rec("a", "2026-01-01T00:00:00+00:00"),  # == since -> skipped
+            _rec("a", "2026-01-01T00:00:00+00:00"),  # == since -> re-emitted (inclusive)
             _rec("b", "2026-02-01T00:00:00+00:00"),  # > since -> emitted
         ]
         records, end_offset = _drain(
@@ -252,8 +259,24 @@ class TestIncrementalEngine:
                 transform=lambda r: r,
             )
         )
-        assert [r["id"] for r in records] == ["b"]
+        assert [r["id"] for r in records] == ["a", "b"]
         assert end_offset == {"cursor": "2026-02-01T00:00:00+00:00"}
+
+    def test_records_strictly_older_than_since_are_skipped(self):
+        """Only strictly-older records are filtered; the boundary second stays."""
+        conn = _connector()
+        arrival = [
+            _rec("old", "2025-12-31T23:59:59+00:00"),  # < since -> skipped
+            _rec("edge", "2026-01-01T00:00:00+00:00"),  # == since -> re-emitted
+        ]
+        records, _ = _drain(
+            conn._incremental_from_iter(
+                iter(arrival),
+                start_offset={"cursor": "2026-01-01T00:00:00+00:00"},
+                transform=lambda r: r,
+            )
+        )
+        assert [r["id"] for r in records] == ["edge"]
 
     def test_init_ts_cap_skips_records_modified_after_start(self):
         conn = _connector()
@@ -403,3 +426,89 @@ class TestReadTableDispatch:
         conn = _connector()
         with pytest.raises(ValueError, match="Unsupported table"):
             conn.read_table("not_a_table", {}, {})
+
+
+# --------------------------------------------------------------------------- #
+# Table options -> API query params
+# --------------------------------------------------------------------------- #
+
+
+class TestTableOptionsToQueryParams:
+    """Each reader must translate its supported table_options into the correct
+    Purview query-param names (domain_id -> domainId, etc.) and omit params for
+    options that weren't supplied."""
+
+    @staticmethod
+    def _capture(monkeypatch):
+        calls = []
+
+        def fake(session, url, params, label, **kwargs):
+            calls.append({"url": url, "params": dict(params), "label": label})
+            return iter([])
+
+        monkeypatch.setattr(mp, "next_link_paginate", fake)
+        return calls
+
+    def test_business_domains_translates_write_only(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        _drain(
+            _connector().read_table(
+                "business_domains", {}, {"write_only": "true"}
+            )
+        )
+        assert calls[0]["url"].endswith("/datagovernance/catalog/businessdomains")
+        assert calls[0]["params"].get("writeOnly") == "true"
+        assert calls[0]["params"].get("api-version")
+
+    def test_business_domains_omits_write_only_when_absent(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        _drain(_connector().read_table("business_domains", {}, {}))
+        assert "writeOnly" not in calls[0]["params"]
+
+    def test_data_products_translates_domain_and_order_by(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        _drain(
+            _connector().read_table(
+                "data_products", {}, {"domain_id": "dom-1", "order_by": "name asc"}
+            )
+        )
+        params = calls[0]["params"]
+        assert calls[0]["url"].endswith("/datagovernance/catalog/dataProducts")
+        assert params.get("domainId") == "dom-1"
+        assert params.get("orderBy") == "name asc"
+        assert params.get("top")  # page size always set on the skip/top endpoints
+
+    def test_data_products_omits_optional_params_when_absent(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        _drain(_connector().read_table("data_products", {}, {}))
+        params = calls[0]["params"]
+        assert "domainId" not in params
+        assert "orderBy" not in params
+
+    def test_terms_translates_all_filters(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        _drain(
+            _connector().read_table(
+                "terms",
+                {},
+                {
+                    "domain_id": "dom-1",
+                    "parent_id": "par-1",
+                    "keyword": "pii",
+                    "order_by": "name asc",
+                },
+            )
+        )
+        params = calls[0]["params"]
+        assert calls[0]["url"].endswith("/datagovernance/catalog/terms")
+        assert params.get("domainId") == "dom-1"
+        assert params.get("parentId") == "par-1"
+        assert params.get("keyword") == "pii"
+        assert params.get("orderBy") == "name asc"
+
+    def test_terms_omits_optional_params_when_absent(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        _drain(_connector().read_table("terms", {}, {}))
+        params = calls[0]["params"]
+        for key in ("domainId", "parentId", "keyword", "orderBy"):
+            assert key not in params

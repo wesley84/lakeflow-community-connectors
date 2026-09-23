@@ -1,17 +1,12 @@
 # Microsoft Purview API Documentation
 
-> ⚠️ **CORRECTION (2026-08-19) — supersedes stale claims below.** An earlier revision of this
-> doc (2026-08-14) stated the Unified Catalog governance layer had **no published REST API**.
-> That is **no longer true** (and was already stale by weeks): Microsoft shipped the **Unified
-> Catalog / Data Governance REST API** — public preview, api-version `2026-03-20-preview` —
-> covering business domains, data products, and terms. Base host
+> **This connector targets the Microsoft Purview Unified Catalog / Data Governance REST API**
+> (public preview, api-version `2026-03-20-preview`): base host
 > `https://api.purview-service.microsoft.com`, paths `/datagovernance/catalog/...`, auth via
-> Entra OAuth2 (scope `https://purview.azure.net/.default`). **This connector targets that
-> Unified Catalog API** (`business_domains`, `data_products`, `terms`). The Atlas Data Map API
-> described below still exists and remains a valid *alternative* surface (and the one to use if
-> a tenant's metadata lives in the classic Data Map), but the sections below that say "no REST
-> API for Unified Catalog" are OUTDATED — read them as "Data Map is one option; Unified Catalog
-> now has its own API too." Verify specifics against the live tenant during Phase 2.
+> Entra OAuth2 (scope `https://purview.azure.net/.default`). It reads `business_domains`,
+> `data_products`, and `terms`. The classic **Atlas Data Map** API (documented later in this
+> file) is a separate, still-valid surface for tenants whose metadata lives in the Data Map — it
+> is not what this connector uses, but it is kept here as reference for that alternative path.
 >
 > **Scope**: READ-ONLY extraction of governed metadata from a Microsoft Purview account. Target
 > use case: extract technical and business metadata — entities/assets, classifications, glossary
@@ -32,37 +27,45 @@
 - **Microsoft Purview** (2022–present): renamed + new governance features added. The Atlas/Data Map
   REST API is unchanged and still the primary programmatic interface for reading assets, glossary,
   classifications, contacts (owners/experts), and search.
-- **Unified Catalog** (2024–present): new SaaS-layer UI and concept model (governance domains, data
-  products, OKRs, business terms with policies). It renders over the same underlying Data Map. As
-  of mid-2026 there is **no published REST API** for Unified Catalog governance domains, data
-  products, or OKR objects — these are UI-only in the portal (`purview.microsoft.com`). The Atlas
-  Data Map API remains the only stable, documented REST surface.
+- **Unified Catalog** (2024–present): SaaS-layer UI and concept model (governance domains, data
+  products, OKRs, business terms with policies). It now exposes its own **Data Governance REST
+  API** (public preview, api-version `2026-03-20-preview`, base host
+  `https://api.purview-service.microsoft.com`, paths `/datagovernance/catalog/...`) covering
+  governance domains, data products, and terms — this is the surface **this connector uses**. The
+  Atlas Data Map API remains available for classic-Atlas metadata (assets, classifications, search).
 
-### Two API Families
+### API Families
 
 | API Family | Base URL pattern | Current version | Status |
 |---|---|---|---|
-| **Data Map (Atlas) — data plane** | `https://{account}.purview.azure.com/datamap/api/...` | `2023-09-01` (stable); `2024-03-01-preview` | **Current and recommended** |
+| **Unified Catalog / Data Governance — data plane** | `https://api.purview-service.microsoft.com/datagovernance/catalog/...` | `2026-03-20-preview` (public preview) | **What this connector uses** — governance domains, data products, terms |
+| **Data Map (Atlas) — data plane** | `https://{account}.purview.azure.com/datamap/api/...` | `2023-09-01` (stable); `2024-03-01-preview` | Alternative surface for classic-Atlas metadata (assets, classifications, search) |
 | **Azure Resource Manager (ARM) — control plane** | `https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Purview/accounts/{account}` | `2021-12-01` | For provisioning only — not needed for reading metadata |
 
-The Data Map data plane is the one to target for metadata extraction. All entity, glossary,
-classification, and search endpoints live there.
+This connector targets the **Unified Catalog / Data Governance** data plane. The Data Map data
+plane is documented below as the alternative surface for tenants whose metadata lives in the
+classic Atlas Data Map (entities, glossary, classifications, search).
 
 The **old Azure Purview Atlas URL** (`https://{account}.catalog.purview.azure.com/api/atlas/v2/...`)
 was the pre-2023 path; it **still routes** to the same backend but Microsoft now documents the
 newer path format `{endpoint}/datamap/api/atlas/v2/...` where `{endpoint}` is
 `https://{account}.purview.azure.com`. Use the newer path going forward.
 
-### Unified Catalog — No REST API for Governance Domains or Data Products
+### Unified Catalog — Data Governance REST API
 
-As of 2026-08, the Unified Catalog UI objects (governance domains, data products, critical data
-elements, OKRs) **do not have a published REST API endpoint**. Microsoft docs reference a
-"Unified Catalog data plane" role assignment in the portal but the actual REST API for querying
-these objects is not publicly documented or stable. The Atlas Data Map API (`/datamap/api/atlas/v2/`)
-is the only fully-documented REST surface for automated metadata extraction.
+The Unified Catalog governance objects are reachable via the **Data Governance REST API** (public
+preview, api-version `2026-03-20-preview`) at base host `https://api.purview-service.microsoft.com`,
+under `/datagovernance/catalog/...`:
 
-**TBD**: Monitor Microsoft's public API changelog for a Unified Catalog REST API. As of this
-writing, only the Data Map / Atlas path is viable for a connector.
+- `GET /datagovernance/catalog/businessdomains` — governance (business) domains
+- `GET /datagovernance/catalog/dataProducts` — data products
+- `GET /datagovernance/catalog/terms` — glossary terms
+
+These are the three tables this connector ingests. Auth is the same Entra OAuth2 client-credentials
+model as the Data Map (scope `https://purview.azure.net/.default`). Being public preview, field
+names / `api-version` can change before GA — verify against the live tenant. Other Unified Catalog
+objects (OKRs, critical data elements) are candidates for future coverage as the API surface
+stabilizes.
 
 ---
 
@@ -193,12 +196,14 @@ The connector targets the following objects. All are available via the Data Map 
 
 The object list is **static** — these are fixed Atlas REST resources, not discovered dynamically.
 
-**Objects not currently available via REST API** (Unified Catalog layer, UI-only as of 2026-08):
+**Unified Catalog objects** (a separate surface from the Data Map tables above) — read via the
+Data Governance REST API (`api.purview-service.microsoft.com/datagovernance/catalog/...`, preview):
 
-- Governance domains
-- Data products
-- OKRs (Objectives and Key Results)
-- Critical data elements
+- Governance domains — ✅ ingested (`business_domains`)
+- Data products — ✅ ingested (`data_products`)
+- Glossary terms — ✅ ingested (`terms`)
+- OKRs (Objectives and Key Results) — not yet ingested
+- Critical data elements — not yet ingested (customer-requested; candidate enhancement)
 
 ---
 
@@ -788,13 +793,13 @@ The legacy URL `https://{account}.catalog.purview.azure.com/api/atlas/v2/...` ro
 backend as the current `https://{account}.purview.azure.com/datamap/api/atlas/v2/...`. Use the
 current URL to avoid depending on a deprecated routing path.
 
-### 8. No REST API for Governance Domains or Data Products (Unified Catalog)
+### 8. Unified Catalog Governance Objects Have a REST API (preview)
 
-The Unified Catalog SaaS layer (governance domains, data products, OKRs, critical data elements,
-policy objects) introduced in 2024–2025 does **not** have a published REST API as of mid-2026.
-These objects exist only in the portal UI. The Atlas Data Map API remains the only automated
-extraction path. If Microsoft releases a Unified Catalog REST API, the connector can be extended
-to pull governance domain assignments.
+Governance domains, data products, and glossary terms are read via the Unified Catalog **Data
+Governance REST API** (public preview, api-version `2026-03-20-preview`; see the "Unified Catalog
+— Data Governance REST API" section above) — this is the connector's ingestion surface. Some
+Unified Catalog objects (OKRs, critical data elements, policy objects) are not yet covered by the
+connector and can be added as the preview API surface expands.
 
 ### 9. `lastModifiedTS` vs `updateTime` — Two Different Fields
 
@@ -851,14 +856,18 @@ However, the connector should still handle token refresh defensively for very la
 | `classifications_catalog` | Enumerate all classification type definitions via `GET /datamap/api/atlas/v2/types/typedefs?type=classification` — static list per account |
 | `entity_types_catalog` | Enumerate all entity type definitions — useful for filtering by source system type |
 
-**Deferred Tables** (Unified Catalog layer — no REST API as of 2026-08):
+> **Note:** the `entities` / `glossary_terms` tables above describe the **Data Map (Atlas)**
+> alternative surface. The tables this connector actually ships are the **Unified Catalog** ones
+> — `business_domains`, `data_products`, `terms` — via the Data Governance REST API (see the
+> "Unified Catalog — Data Governance REST API" section). Governance domains and data products
+> **are** API-accessible (they were previously believed portal-only; that is no longer the case).
 
-| Object | Reason Deferred |
+**Not yet covered** (Unified Catalog objects; candidates as the preview API surface expands):
+
+| Object | Status |
 |---|---|
-| Governance Domains | No published REST API; UI-only in `purview.microsoft.com`. Monitor Microsoft changelog. |
-| Data Products | Same — no REST API. Conceptually equivalent to Collibra communities/domains but no API access. |
-| OKRs | No REST API. |
-| Critical Data Elements | No REST API. |
+| OKRs | Not yet ingested by this connector. |
+| Critical Data Elements | Not yet ingested; requested by customers (e.g. Altria) — candidate enhancement. |
 
 ---
 
@@ -913,7 +922,7 @@ However, the connector should still handle token refresh defensively for very la
 |---|---|---|---|---|
 | Official Docs | https://learn.microsoft.com/en-us/purview/purview | 2026-08-14 | High | Platform overview: Data Map + Unified Catalog are the two governance solutions; no deprecated APIs flagged |
 | Official Docs | https://learn.microsoft.com/en-us/purview/data-governance-overview | 2026-08-14 | High | Data Map + Unified Catalog architecture; roles: Data Curator, Data Reader for API access |
-| Official Docs | https://learn.microsoft.com/en-us/purview/unified-catalog | 2026-08-14 | High | Unified Catalog features: governance domains, data products, glossary terms, OKRs, health controls — all UI-only, no published REST API documented |
+| Official Docs | https://learn.microsoft.com/en-us/purview/unified-catalog | 2026-08-14 | High | Unified Catalog features: governance domains, data products, glossary terms, OKRs, health controls. (The Data Governance REST API — api-version `2026-03-20-preview`, `api.purview-service.microsoft.com/datagovernance/catalog/...` — covers domains/products/terms and is the surface this connector uses.) |
 | Official Docs | https://learn.microsoft.com/en-us/purview/data-gov-api-rest-data-plane | 2026-08-14 | High | Auth model: Entra client credentials, resource=https://purview.azure.net; token lifetime 86399s; Data Map roles vs Unified Catalog roles; service principal creation steps |
 | Official Docs | https://learn.microsoft.com/en-us/rest/api/purview/datamapdataplane/entity | 2026-08-14 | High | Entity operation group, API version 2023-09-01, all operations listed |
 | Official Docs | https://learn.microsoft.com/en-us/rest/api/purview/datamapdataplane/entity/get | 2026-08-14 | High | GET /datamap/api/atlas/v2/entity/guid/{guid} full response schema including contacts (Owner/Expert), classifications, meanings (term assignments), businessAttributes, labels |

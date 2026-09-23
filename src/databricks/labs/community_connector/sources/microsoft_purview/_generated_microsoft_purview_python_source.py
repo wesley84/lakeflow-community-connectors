@@ -1134,8 +1134,12 @@ def register_lakeflow_source(spark):
             """Apply the client-side incremental cursor over a record iterator.
 
             Applies, per record:
-              * strict ``> since`` filtering (exclusive lower bound), so a resumed
-                boundary record is not re-emitted, and
+              * inclusive ``>= since`` filtering (skip only strictly-older records)
+                so same-second records straddling a run boundary are not lost — the
+                cursor is second-granular, so a strict ``>`` would permanently drop a
+                record sharing the watermark second that arrives after the watermark
+                reached it; boundary rows are re-emitted and deduped by the CDC
+                primary-key upsert, and
               * an init-time upper cap (skip records modified after
                 ``self._init_ts``) so Trigger.AvailableNow terminates.
 
@@ -1167,8 +1171,16 @@ def register_lakeflow_source(spark):
             max_seen = since
             for raw in record_iter:
                 cursor = self._record_cursor(raw)
-                # Strict `>` so a resumed inclusive `since` doesn't re-emit boundary.
-                if since is not None and cursor is not None and cursor <= since:
+                # Inclusive `>=` boundary (skip only strictly-older records). The
+                # cursor's smallest unit is a *second* (systemData.lastModifiedAt),
+                # so several records can share the exact boundary value. A strict `>`
+                # would permanently drop any same-second record that lands after a
+                # prior run already advanced the watermark to that second. Re-emitting
+                # the boundary second each run is safe: CDC upserts on the primary key
+                # (`id`), so re-read boundary rows are deduped, not duplicated. The
+                # cost is bounded (only rows at exactly the max second) and the offset
+                # still cannot advance past `_init_ts`, so triggers converge.
+                if since is not None and cursor is not None and cursor < since:
                     continue
                 # Init-time cap: skip records modified after the connector started.
                 if cursor is not None and cursor > self._init_ts:
